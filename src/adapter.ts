@@ -92,6 +92,23 @@ export function workBuddyModelInput(info: WorkBuddyModelInfo): ('text' | 'image'
   return info.multimodal === true ? ['text', 'image'] : ['text']
 }
 
+/**
+ * DSH-facing display name: the model name plus the upstream credit multiplier,
+ * spelled the way WorkBuddy's own selector does (`GLM-5.3 · x0.79`).
+ *
+ * Display-only by construction: every DSH-side join keys on the model id —
+ * the selector's current choice (`provider` + `model`), the durable
+ * `model/selection` / `request/header` session events, the agent default-model
+ * settings, and the request wire (`model: <id>` reaching the shim). A model
+ * without a parsed multiplier keeps its bare name; a zero multiplier shows
+ * `x0.00`, matching WorkBuddy's rendering of free models.
+ */
+export function workBuddyDisplayName(info: WorkBuddyModelInfo): string {
+  return info.creditMultiplier === undefined
+    ? info.name
+    : `${info.name} · x${info.creditMultiplier.toFixed(2)}`
+}
+
 /** Map only levels advertised by WorkBuddy; undeclared DSH levels stay unavailable. */
 export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyThinkingLevelMap | undefined {
   const supported = info.reasoning?.supportedEfforts?.filter((effort): effort is WorkBuddyThinkingLevel =>
@@ -110,7 +127,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
   const thinkingLevelMap = workBuddyThinkingLevelMap(info)
   return {
     id: info.id,
-    name: info.name,
+    name: workBuddyDisplayName(info),
     api: 'openai-completions',
     provider: WORKBUDDY_PROVIDER,
     baseUrl,

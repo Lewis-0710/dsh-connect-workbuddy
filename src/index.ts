@@ -27,13 +27,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
-import { createWorkBuddyAdapter, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
+import { createWorkBuddyAdapter, workBuddyDisplayName, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
-export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyModelInput, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
+export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
   deriveCatalog,
@@ -94,6 +94,7 @@ export {
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
+  toPersistedWorkBuddyModel,
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
@@ -288,7 +289,7 @@ export function apply(ctx: Context, config: Config): void {
           )
           return next.map(model => ({
             id: model.id,
-            name: model.name,
+            name: workBuddyDisplayName(model),
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
             inputModalities: workBuddyModelInput(model),

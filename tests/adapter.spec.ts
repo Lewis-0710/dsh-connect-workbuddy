@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
+import { workBuddyDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
 import type { WorkBuddyModelInfo } from '../src/catalog.ts'
 
 function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean): WorkBuddyModelInfo {
@@ -18,6 +18,18 @@ describe('workBuddyModelInput', () => {
     expect(workBuddyModelInput(model(undefined, true))).toEqual(['text', 'image'])
     expect(workBuddyModelInput(model(undefined, false))).toEqual(['text'])
     expect(workBuddyModelInput(model())).toEqual(['text'])
+  })
+})
+
+describe('workBuddyDisplayName', () => {
+  it('spells the credit multiplier the way WorkBuddy own selector does', () => {
+    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0.79 })).toBe('Test · x0.79')
+    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0.05 })).toBe('Test · x0.05')
+    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0 })).toBe('Test · x0.00')
+  })
+
+  it('keeps the bare name when no multiplier was parsed', () => {
+    expect(workBuddyDisplayName(model())).toBe('Test')
   })
 })
 

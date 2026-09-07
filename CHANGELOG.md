@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **模型选择器显示积分倍率**：DSH 模型选择器中的 WorkBuddy 模型现在按 WorkBuddy 自身选择器的拼写显示积分倍率（如 `GLM-5.3 · x0.79`；未解析到倍率则保持原名称，免费模型显示 `x0.00`）。仅改 DSH 侧显示名（`toPiModel` 与模型 discovery 的 `name`）：模型 `id`、`lastCatalog` 存档与插件卡片显示不变——DSH 的选择状态、会话事件（`model/selection` / `request/header`）、agent 默认模型设置与请求路由全部以 `provider + model id` 为连接键，倍率后缀不参与任何映射。
+
+### Fixes
+
+- **修复模型保存始终失败（`client api: settings/mutate rejected "ops"`）**：卡片保存 `lastCatalog` 时曾用 `nativeContextWindow: undefined, multimodal: undefined` 显式清字段——显式 `undefined` 值会穿过 `structuredClone` 并被设置写入路径的严格 JSON codec 拒绝，导致**整次保存静默失败**（错误是 unhandled rejection，UI 无任何提示；用户侧表现为「保存按钮按不下去」）。姊妹项目 dsh-connect-trae 的 payload 不含 undefined 字段，故不受影响。现在改用 `toPersistedWorkBuddyModel` 按 KEY 剥离卡片专用字段（附回归测试：持久化形状不得含 undefined 值属性、JSON 往返无损）。
+- **保存失败可见化**：保存抛错此前是静默的 unhandled rejection（UI 零提示，正是它掩盖了上一条 bug）。现在保存失败时在按钮旁显示具体原因，草稿保持 dirty 可直接重试；成功路径与 dsh-connect-trae 卡片完全一致（保存中… → 自然结束 → 恢复「保存」并禁用），无额外装饰。
+
 ## 1.1.3 (2026-09-04)
 
 ### Breaking Changes

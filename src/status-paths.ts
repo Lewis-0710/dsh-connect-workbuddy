@@ -76,6 +76,22 @@ export interface WorkBuddyWebModel {
   description?: string
 }
 
+/**
+ * Project one card row into its persisted `lastCatalog` shape: the native
+ * context window becomes the stored `contextWindow`, and the card-only
+ * presentation fields (`nativeContextWindow`, `multimodal`) are removed BY
+ * KEY. They must never be set to `undefined`: explicit `undefined` values
+ * survive `structuredClone` and are rejected by the settings write path's
+ * strict JSON codec (`client api: settings/mutate rejected "ops"`), which
+ * fails the whole save.
+ */
+export function toPersistedWorkBuddyModel(
+  model: WorkBuddyWebModel,
+): Omit<WorkBuddyWebModel, 'nativeContextWindow' | 'multimodal'> {
+  const { nativeContextWindow, multimodal: _cardOnly, ...rest } = model
+  return { ...rest, contextWindow: nativeContextWindow }
+}
+
 /** One selectable local account, token-free. */
 export interface WorkBuddyWebAccount {
   id: string

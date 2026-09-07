@@ -28,6 +28,7 @@ import {
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
+  toPersistedWorkBuddyModel,
 } from '../status-paths.ts'
 import type { WorkBuddyWebModel, WorkBuddyWebUsage } from '../status-paths.ts'
 import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
@@ -115,6 +116,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const [draftImageIds, setDraftImageIds] = useState<Set<string> | undefined>(undefined)
   const [draftContextBudgets, setDraftContextBudgets] = useState<Record<string, number> | undefined>(undefined)
   const [saving, setSaving] = useState(false)
+  /** Save failure surfaced next to the buttons; cleared by the next attempt. */
+  const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
   const [checkingIn, setCheckingIn] = useState(false)
   const [checkinActionError, setCheckinActionError] = useState<string | undefined>(undefined)
@@ -293,21 +296,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const saveModels = async (): Promise<void> => {
     if (settingsScope === undefined) return
     setSaving(true)
+    setSaveError(undefined)
     try {
       // Save the raw directory plus the pure selection. The Host derives the
       // runtime catalog from these two on save/restart, so re-opening the card
       // re-reads WorkBuddy's current catalog instead of a stale snapshot.
-      await settingsScope.set('lastCatalog', visibleModels.map(model => ({
-        ...model,
-        contextWindow: model.nativeContextWindow,
-        nativeContextWindow: undefined,
-        multimodal: undefined,
-      })))
+      // toPersistedWorkBuddyModel strips the card-only fields BY KEY: explicit
+      // `undefined` values are rejected by the settings write's strict JSON
+      // codec, which used to fail the whole save silently.
+      await settingsScope.set('lastCatalog', visibleModels.map(toPersistedWorkBuddyModel))
       await settingsScope.set('enabledModelIds', [...activeEnabledIds])
       await settingsScope.set('imageModelIds', [...activeImageIds])
       await settingsScope.set('contextBudgets', activeContextBudgets)
       discardModels()
       await refreshUsage()
+    } catch (error: unknown) {
+      // Drafts stay dirty on failure, so the button remains pressable for a
+      // retry; the reason is shown instead of a silent unhandled rejection.
+      if (mounted.current) setSaveError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setSaving(false)
     }
@@ -563,6 +569,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           {t('row.cheer')}
                           <span className="dsm-workbuddy-usage-cheer-star" aria-hidden="true">★</span>
                         </a>
+                        {saveError === undefined ? null
+                          : <span className="dsm-workbuddy-model-save-error">{t('row.saveError', { message: saveError })}</span>}
                         <div className="dsm-workbuddy-model-actions-buttons">
                           <button type="button" className="dsm-btn dsm-btn-outline" disabled={!dirty || saving} onClick={discardModels}>
                             {t('row.discard')}
