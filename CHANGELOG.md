@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.0 (2026-09-10)
+
+### Breaking Changes
+
+- **跟进上游 DSH 内核 0.1.2-rc.1 → 0.1.5-rc.1**：本机 DSH Desktop 2.0.9 捆绑的内核已跃迁到 `0.1.5-rc.1`（npm `latest`），而插件此前按 `0.1.2-rc.1` 编译。依赖链与代码已对齐新内核线：
+
+  - **`ResolvedPiAiProviderProfile.modelErrors` 变为必填**：`dsh-llm-pi-ai` 的 provider profile 在 0.1.5-rc.1 新增必填字段 `modelErrors`，`PiAiAdapter.modelOf` 会在每次请求时读取，并对其中列出的任何 model id 抛出 `INVALID_CONFIG`。本插件的目录来自上游实时读取，因此填**空 Map**——即「无已知失败模型」，绝不预先否定目录后续提供的模型。这是本次跃迁中本插件唯一的一处源码编译失败。
+  - **`@deepseek-ai/dsh-client-runtime` 已停止发布**：该包停在 `0.1.1-rc.2`，在 0.1.5 线上既未发布也不在桌面捆绑集内（其槽位/会话服务迁至 `dsh-client-ui-renderer/client`）。此前客户端入口从它取 `ClientContext` 类型、并在 `dsh.client.inject` 中声明它。现改为：运行期注入以真实提供 `slots` 服务的 5 个包为准（移出 `dsh-client-runtime`），类型侧用具名 `WorkBuddyClientContext`（cordis `Context` + `slots`/`locale`/`settingsScope` 三个座位），使客户端入口在两条主机线上都能编译。
+  - `@earendil-works/pi-ai`：`0.85.0` → `0.85.1`。
+
+### Fixes
+
+- **升级后 provider 注册不再静默失效**：`modelErrors` 缺失在 0.1.5-rc.1 上是**编译期**硬失败（本次已由 `pnpm run check` 捕获并修复）；回归测试进一步把「运行时该 map 必须为空」钉死，避免日后有人在其中塞入模型 id 而悄悄禁用整条路由。
+- **客户端 half 不再依赖已消失的包**：`dsh-client-runtime` 在 0.1.5 主机上无法解析，客户端插件此前把它列为注入目标；现已移除，构建产物 `lib/client.js` 对它零引用。
+
+### Dependencies
+
+- 全部 `@deepseek-ai/dsh-*`：`0.1.2-rc.1` → `0.1.5-rc.2`（`0.1.5-rc.1` 为 npm `latest`，`rc.2` 已在 `next` 通道；本仓库按线跟进并锁在 lockfile）
+- `@deepseek-ai/dsh-client-runtime`：保留 `0.1.1-rc.2`，**仅作旧主机线的类型来源**，不参与 0.1.5 运行时
+- 新增 `@deepseek-ai/dsh-client-ui-renderer`：0.1.5 线上 `slots` 服务的真实提供方
+- 依赖声明统一改为**范围**而非写死补丁版本（含 `pnpm-workspace.yaml` 的 `overrides`），升级时只需改一处版本串
+
+### Docs
+
+- 记录本轮内核跃迁的对照依据与影响判定：本插件**不受** F1（会话持久化改为句柄化接缝）与 F3（`PERSONA_SECTION` 改名）影响——全仓无会话日志直读、无 persona 段 key 注入；受影响面集中在 F4（导出面变化）与 A4（声明依赖须落在捆绑子集内）。
+
 ## 1.2.0 (2026-09-09)
 
 ### Features

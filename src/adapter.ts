@@ -186,6 +186,12 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     streamIdleTimeoutMs: WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-connect-workbuddy retryPolicy'),
     configuredMaxTokens: new Map(),
+    // Per-model failures gate every request: `modelOf` throws INVALID_CONFIG
+    // for any id present here. The workbuddy catalog is built from live reads,
+    // so an empty map is the accurate answer — no known-bad model — and the
+    // route must never pre-condemn a model that the catalog later supplies.
+    // (Required by ResolvedPiAiProviderProfile since 0.1.5-rc.1.)
+    modelErrors: new Map(),
     ...REQUEST_IMAGE_BUDGETS,
     piProvider: provider,
   }
