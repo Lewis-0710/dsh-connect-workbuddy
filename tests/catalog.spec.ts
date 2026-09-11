@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveCatalog, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from '../src/catalog.ts'
+import { deriveCatalog, fallbackModelsFor, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from '../src/catalog.ts'
 import type { WorkBuddyModelInfo } from '../src/catalog.ts'
 
 const MODELS: readonly WorkBuddyModelInfo[] = [
@@ -73,5 +73,41 @@ describe('WorkBuddyCatalog', () => {
     const catalog = new WorkBuddyCatalog()
     expect(() => catalog.set([])).toThrow(/cannot be empty/)
     expect(catalog.current().length).toBeGreaterThan(0)
+  })
+})
+
+describe('fallbackModelsFor', () => {
+  it('keeps each region on its own roster — the CN fallback never leaks into global', () => {
+    // The CN catalog is the one that must never seed a global account: it has
+    // no gpt-*/gemini-* entries, so a global account showed a roster it could
+    // not use.
+    const cn = new Set(fallbackModelsFor('cn').map(model => model.id))
+    const global = new Set(fallbackModelsFor('global').map(model => model.id))
+
+    expect([...global].some(id => id.startsWith('gpt-') || id.startsWith('gemini-'))).toBe(true)
+    expect([...cn].some(id => id.startsWith('gpt-') || id.startsWith('gemini-'))).toBe(false)
+    expect([...cn].some(id => id.startsWith('minimax-'))).toBe(true)
+    // The international roster uses `default-model`, the CN one `auto`.
+    expect(global.has('default-model')).toBe(true)
+    expect(cn.has('auto')).toBe(true)
+    expect(cn.has('default-model')).toBe(false)
+    // The CN open-weight deepseek ids stay CN-only; the one deepseek id the
+    // international desktop channel offers is its own.
+    expect(cn.has('deepseek-v4-pro')).toBe(true)
+    expect(global.has('deepseek-v4-pro')).toBe(false)
+    expect(global.has('deepseek-v4.1-flash')).toBe(true)
+  })
+
+  it('carries the captured credit multipliers on the global roster', () => {
+    const global = fallbackModelsFor('global')
+    expect(global.find(model => model.id === 'gpt-5.6-sol')?.creditMultiplier).toBe(3.47)
+    expect(global.find(model => model.id === 'gpt-6-astra')?.creditMultiplier).toBe(6.67)
+    // Free promotional models report a real 0 rather than "no rate known".
+    expect(global.find(model => model.id === 'hy3')?.creditMultiplier).toBe(0)
+    expect(global.find(model => model.id === 'deepseek-v4.1-flash')?.creditMultiplier).toBe(0)
+  })
+
+  it('defaults to the CN roster only for the cn region', () => {
+    expect(fallbackModelsFor('cn')).toBe(FALLBACK_WORKBUDDY_MODELS)
   })
 })

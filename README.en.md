@@ -17,11 +17,11 @@
 
 [English](README.en.md) | 中文
 
-A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle plugin that connects locally signed-in WorkBuddy CN models to the DSH model picker, with a read-only credits overview and selectable model management.
+A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle plugin that connects locally signed-in WorkBuddy models to the DSH model picker — **both the CN app and the international WorkBuddy AI app are supported** — with a read-only credits overview and selectable model management.
 
 ## Features
 
-- **WorkBuddy model provider** — registers locally signed-in WorkBuddy models as the `workbuddy` provider (e.g. `GLM-5.3`, `DeepSeek-V4-Pro`, `Kimi-K3`, `MiniMax-M3`, `Hy3`); model names carry the upstream credit multiplier (e.g. `GLM-5.3 · x0.79`), matching WorkBuddy's own model menu.
+- **WorkBuddy model provider (CN + international)** — registers locally signed-in WorkBuddy models as the `workbuddy` provider: CN accounts expose `GLM-5.3`, `DeepSeek-V4-Pro`, `Kimi-K3`, `MiniMax-M3`, `Hy3`, etc., while international accounts expose `GPT-5.6`, `Gemini-3.5-Flash`, `GLM-5.3`, `Kimi-K3`, etc.; model names carry the upstream credit multiplier (e.g. `GLM-5.3 · x0.79`), matching WorkBuddy's own model menu. **Region routing is fully automatic — no toggle anywhere**: whichever account you select is the region you use.
 - **Model management** — refresh the full catalog from upstream and enable or disable each model individually; refresh is a draft operation that only takes effect on save. Upstream also reports credit multiplier, context/output limits, and reasoning efforts; image input is opted in per model manually (off by default).
 - **Local account switching** — discovers the multiple sign-in credentials WorkBuddy's desktop app leaves behind and lets you switch between them. Tokens are never written to DSH settings.
 - **Read-only credits overview** — remaining credit aggregated per package, plus each model's credit multiplier. Queries consume no credits.
@@ -40,7 +40,7 @@ DSH PiAiAdapter
   -> DSH executes local tools and returns their results
 ```
 
-The model catalog comes from `/console/enterprises/personal/models` and the credits overview from `https://www.codebuddy.cn/v2/billing/meter/get-user-resource`; both are read-only.
+The model catalog comes from each region's correct source: CN reads `/v2/enterprises/personal/models`, while international reads `www.workbuddy.ai/v3/config` — the config service serves a different roster per client channel, and only the desktop user agent yields the account's real 20-model list (including the free `deepseek-v4.1-flash`). The credits overview comes from `https://www.codebuddy.cn/v2/billing/meter/get-user-resource` (international accounts auto-route to `https://www.workbuddy.ai`); all are read-only. No manual region toggle: routing follows the `domain` field inside the credential file (`workbuddy.ai` → international, anything else → CN), and **each region keeps its own directory and selection**, so switching accounts never overwrites the other region's picks.
 
 Credentials are read (read-only) from the WorkBuddy desktop app's own auth file. Refreshed tokens are kept separately in `$DSH_HOME/.workbuddy-auth.json`; the desktop app's file is never written.
 

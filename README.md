@@ -23,11 +23,11 @@
   <a href="https://dshfind.com/plugins/dingminhua/dsh-connect-workbuddy"><img src="https://dshfind.com/api/badge/dingminhua/dsh-connect-workbuddy" alt="dshfind plugin"></a>
 </p>
 
-一个独立的 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle 插件。它把本机已登录的 WorkBuddy 中国区账号接到 DSH 的模型选择器，同时提供**只读**的积分概览与可勾选的模型管理界面。
+一个独立的 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle 插件。它把本机已登录的 WorkBuddy 账号（**国内版与国际版 WorkBuddy AI 均支持**）接到 DSH 的模型选择器，同时提供**只读**的积分概览与可勾选的模型管理界面。
 
 ## 功能特性
 
-- **WorkBuddy 模型接入** —— 把本机登录的 WorkBuddy 模型注册为 DSH 的 `workbuddy` provider，模型选择器出现 `GLM-5.3`、`DeepSeek-V4-Pro`、`Kimi-K3`、`MiniMax-M3`、`Hy3` 等；模型名内嵌上游积分倍率（如 `GLM-5.3 · x0.79`），与 WorkBuddy 自身模型菜单一致。
+- **WorkBuddy 模型接入（国内版 + 国际版）** —— 把本机登录的 WorkBuddy 模型注册为 DSH 的 `workbuddy` provider：国内账号出现 `GLM-5.3`、`DeepSeek-V4-Pro`、`Kimi-K3`、`MiniMax-M3`、`Hy3` 等，国际账号出现 `GPT-5.6`、`Gemini-3.5-Flash`、`GLM-5.3`、`Kimi-K3` 等；模型名内嵌上游积分倍率（如 `GLM-5.3 · x0.79`），与 WorkBuddy 自身模型菜单一致。**区域自动路由，无需任何开关**——选中哪个账号就走哪个区域。
 - **模型管理** —— 从上游刷新完整模型目录，逐项勾选启用或禁用；刷新是草稿操作，点保存才生效。上游同时给出积分倍率、上下文/输出上限与推理档位；图片输入按模型手动勾选（默认不勾选）。
 - **本机账号切换** —— 自动发现 WorkBuddy 桌面端留下的多个登录凭据，可切换账号；Token 不写入 DSH 设置。
 - **只读积分概览** —— 按套餐聚合展示剩余积分，并列出每个模型的积分倍率。查询不消耗积分。
@@ -46,7 +46,7 @@ DSH PiAiAdapter
   -> DSH 本地执行工具并回传结果
 ```
 
-模型目录走 `/console/enterprises/personal/models`，积分概览走 `https://www.codebuddy.cn/v2/billing/meter/get-user-resource`，两者均为只读接口。
+模型目录按区域取自各自的正确来源：国内版走 `/v2/enterprises/personal/models`，国际版走 `www.workbuddy.ai/v3/config`（配置服务按客户端渠道返回不同清单，国际版必须用桌面端 User-Agent 才能取到账号真实的 20 个模型，含免费的 `deepseek-v4.1-flash`）。积分概览走 `https://www.codebuddy.cn/v2/billing/meter/get-user-resource`（国际版账号自动路由到 `https://www.workbuddy.ai`），均为只读接口。区域无需手动切换：插件按凭据文件里的 `domain` 字段自动路由（`workbuddy.ai` → 国际版，其余 → 国内版），且**两个区域各自保存一份目录与勾选**，切换账号互不覆盖。
 
 凭据读取自 WorkBuddy 桌面 App 自身的 auth 文件（只读）；刷新得到的 token 单独存放在 `$DSH_HOME/.workbuddy-auth.json`，桌面端文件永不被写入。
 

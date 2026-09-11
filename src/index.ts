@@ -25,11 +25,12 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
-import { deriveCatalog, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
+import { deriveCatalog, fallbackModelsFor, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
 import { createWorkBuddyAdapter, workBuddyModelDisplayName, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
-import { WorkBuddyUpstreamClient } from './upstream.ts'
+import { regionOf, WorkBuddyUpstreamClient } from './upstream.ts'
+import type { WorkBuddyRegion } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
@@ -37,7 +38,9 @@ export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAd
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
   deriveCatalog,
+  fallbackModelsFor,
   FALLBACK_WORKBUDDY_MODELS,
+  FALLBACK_WORKBUDDY_MODELS_GLOBAL,
   WorkBuddyCatalog,
   type WorkBuddyModelInfo,
 } from './catalog.ts'
@@ -111,19 +114,42 @@ export const inject = ['llm', 'settings']
 /** Settings namespace for the plugin configuration card. */
 export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 
+/** One region's model directory and the user's selection within it. */
+export interface WorkBuddyRegionState {
+  /** The last-refreshed directory for this region; what the card displays. */
+  lastCatalog?: WorkBuddyModelInfo[]
+  /** The user's selection in this region, as model ids. */
+  enabledModelIds?: string[]
+  /** Model ids the user explicitly opted into image input. */
+  imageModelIds?: string[]
+  /** Local DSH context budget per model in this region. */
+  contextBudgets?: Record<string, WorkBuddyContextBudget>
+}
+
 /** Plugin configuration. */
 export interface Config {
   /** Explicit WorkBuddy desktop auth-file path, overriding env and platform defaults. */
   authFile?: string
   /** Stable local account selector; tokens remain outside settings. */
   accountId?: string
-  /** The last-refreshed model directory; what the plugin card displays. */
+  /**
+   * Per-region model state, keyed `cn` | `global`. The CN app and the
+   * international WorkBuddy AI app expose different rosters, so each keeps its
+   * own directory and selection and switching accounts never drops the other
+   * region's picks.
+   */
+  regions?: Partial<Record<WorkBuddyRegion, WorkBuddyRegionState>>
+  /**
+   * @deprecated Legacy single-slot fields from before the region split. They
+   * predate international support and are read as the CN region's state when
+   * `regions.cn` is absent; new writes go to `regions`.
+   */
   lastCatalog?: WorkBuddyModelInfo[]
-  /** The user's selection, as model ids. */
+  /** @deprecated See {@link Config.lastCatalog}. */
   enabledModelIds?: string[]
-  /** Model ids the user explicitly opted into image input. */
+  /** @deprecated See {@link Config.lastCatalog}. */
   imageModelIds?: string[]
-  /** Local DSH context budget per model; models above 200K default to 200K. */
+  /** @deprecated See {@link Config.lastCatalog}. */
   contextBudgets?: Record<string, WorkBuddyContextBudget>
 }
 
@@ -134,14 +160,43 @@ const modelConfig = z.object({
   maxTokens: z.number().step(1).min(1),
 })
 
+const regionStateConfig = z.object({
+  lastCatalog: z.array(modelConfig).default([]),
+  enabledModelIds: z.array(z.string()).default([]),
+  imageModelIds: z.array(z.string()).default([]),
+  contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
+})
+
 export const Config: z<Config> = z.object({
   authFile: z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
   accountId: z.string().description('Selected local WorkBuddy account id (never a token)'),
-  lastCatalog: z.array(modelConfig).description('Last refreshed WorkBuddy model directory shown by the plugin card') as z<WorkBuddyModelInfo[]>,
-  enabledModelIds: z.array(z.string()).default([]).description('WorkBuddy model ids the user enabled'),
-  imageModelIds: z.array(z.string()).default([]).description('WorkBuddy model ids the user opted into image input'),
-  contextBudgets: z.dict(z.number().step(1).min(1)).default({}).description('Local DSH context budget per WorkBuddy model'),
+  regions: z.dict(regionStateConfig).default({}).description('Per-region model directory and selection, keyed cn | global'),
+  lastCatalog: z.array(modelConfig).description('Deprecated: pre-region-split CN model directory') as z<WorkBuddyModelInfo[]>,
+  enabledModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN selection'),
+  imageModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN image opt-in'),
+  contextBudgets: z.dict(z.number().step(1).min(1)).default({}).description('Deprecated: pre-region-split CN context budgets'),
 })
+
+/**
+ * One region's saved model state. A config written before the region split has
+ * only the flat fields: those were always captured from the CN endpoint (the
+ * plugin had no international support), so they are read as the CN state and
+ * only when no explicit CN slot exists. The global region never inherits them —
+ * that inheritance is exactly the bug where a stale CN directory was
+ * intersected with the international catalog and silently dropped the user's
+ * picks.
+ */
+export function regionStateOf(config: Config, region: WorkBuddyRegion): WorkBuddyRegionState {
+  const stored = config.regions?.[region]
+  if (stored !== undefined) return stored
+  if (region !== 'cn') return {}
+  return {
+    ...config.lastCatalog === undefined ? {} : { lastCatalog: config.lastCatalog },
+    ...config.enabledModelIds === undefined ? {} : { enabledModelIds: config.enabledModelIds },
+    ...config.imageModelIds === undefined ? {} : { imageModelIds: config.imageModelIds },
+    ...config.contextBudgets === undefined ? {} : { contextBudgets: config.contextBudgets },
+  }
+}
 
 /**
  * Start the loopback endpoint, register the `workbuddy` provider, and
@@ -178,14 +233,15 @@ export function apply(ctx: Context, config: Config): void {
   // selection; an empty selection serves the whole directory so a never-
   // configured plugin still exposes models. Image input is the user's explicit
   // opt-in (`imageModelIds`) and never inferred from upstream capability flags.
-  const configuredModels = (value: Config): readonly WorkBuddyModelInfo[] =>
-    withImageSelection(
+  const configuredModels = (value: Config, region: WorkBuddyRegion): readonly WorkBuddyModelInfo[] => {
+    const state = regionStateOf(value, region)
+    return withImageSelection(
       deriveCatalog(
-        value.lastCatalog?.length ? value.lastCatalog : FALLBACK_WORKBUDDY_MODELS,
-        enabledSet(value),
-        value.contextBudgets ?? {},
+        state.lastCatalog?.length ? state.lastCatalog : fallbackModelsFor(region),
+        new Set(state.enabledModelIds ?? []),
+        state.contextBudgets ?? {},
       ),
-      imageSet(value),
+      new Set(state.imageModelIds ?? []),
     )
   // What the card displays: the last-refreshed directory, so the user re-reads
   let discoveredCatalog: readonly WorkBuddyModelInfo[] | undefined
@@ -197,6 +253,22 @@ export function apply(ctx: Context, config: Config): void {
 
   let current = () => config
   let invalidateCatalog = (): void => {}
+  /**
+   * Region of the selected account, tracked so a settings change can recompute
+   * the runtime catalog without re-resolving the credential synchronously.
+   * Every path that reads the credential (startup seed, discovery, card route)
+   * refreshes it, so it converges on the real region.
+   */
+  let currentRegion: WorkBuddyRegion = 'cn'
+  const regionOfCredential = async (): Promise<WorkBuddyRegion> => {
+    try {
+      currentRegion = regionOf((await store.resolve()).domain)
+    } catch {
+      // Unsigned/unresolvable credential: keep the last known region so the
+      // catalog still reflects the account the user last had selected.
+    }
+    return currentRegion
+  }
   const discoverModels = async (signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]> => {
     const credential = await store.resolve()
     const fetched = await client.fetchModels(credential, signal)
@@ -224,10 +296,10 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(['webServer'], (webCtx) => registerWorkBuddyStatusRoute(webCtx, {
     store,
     client,
-    displayModels: () => displayModels(current()),
-    enabledModelIds: () => current().enabledModelIds ?? [],
-    imageModelIds: () => current().imageModelIds ?? [],
-    contextBudgets: () => current().contextBudgets ?? {},
+    displayModels: region => displayModels(current(), region),
+    enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
+    imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
+    contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
     saveSettings,
   }))
@@ -238,8 +310,14 @@ export function apply(ctx: Context, config: Config): void {
       const next = current()
       store.setDesktopPath(next.authFile)
       store.selectAccount(next.accountId)
-      catalog.set(configuredModels(next))
+      catalog.set(configuredModels(next, currentRegion))
       invalidateCatalog()
+      // The account may have changed region (CN ↔ international); converge the
+      // runtime catalog on the selected credential's own region.
+      void regionOfCredential().then(region => {
+        catalog.set(configuredModels(current(), region))
+        invalidateCatalog()
+      })
     },
   })
 
@@ -299,13 +377,16 @@ export function apply(ctx: Context, config: Config): void {
 
         ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request, signal) => {
           if (request.provider !== WORKBUDDY_PROVIDER) return []
+          const discovered = await discoverModels(signal)
+          const region = currentRegion
+          const state = regionStateOf(current(), region)
           const next = withImageSelection(
             deriveCatalog(
-              await discoverModels(signal),
-              enabledSet(current()),
-              current().contextBudgets ?? {},
+              discovered,
+              new Set(state.enabledModelIds ?? []),
+              state.contextBudgets ?? {},
             ),
-            imageSet(current()),
+            new Set(state.imageModelIds ?? []),
           )
           return next.map(model => ({
             id: model.id,
@@ -333,12 +414,13 @@ export function apply(ctx: Context, config: Config): void {
         try {
           const credential = await store.resolve()
           if (stopped) return
+          currentRegion = regionOf(credential.domain)
           const models = await client.fetchModels(credential)
           if (stopped) return
           discoveredCatalog = models
           catalog.set(withImageSelection(
-            deriveCatalog(models, enabledSet(current()), current().contextBudgets ?? {}),
-            imageSet(current()),
+            deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
+            new Set(state.imageModelIds ?? []),
           ))
           invalidate?.()
           // `lastCatalog` is deliberately NOT seeded here: it belongs to the

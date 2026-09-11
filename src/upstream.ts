@@ -15,6 +15,11 @@
  *   本实现将其完整解析（解析不出则留空，不虚构）。
  *   另：积分接口改为按套餐名聚合，实测单个账号下同名「运营裂变包」
  *   可达 19 个，逐条渲染会淹没卡片。
+ *   模型目录路径改为 `/v2/enterprises/personal/models`（原版为
+ *   `/console/enterprises/personal/models`）：两版官方桌面 App 均调用
+ *   `/v2` 形态，CN 网关两条路径逐字节同答，而国际版网关（workbuddy.ai）
+ *   只答 `/v2`、`/console` 形态返回 HTTP 500——统一 `/v2` 即同时覆盖
+ *   国内版与国际版（WorkBuddy AI）账号，区域由 `domain` 自动路由。
  *
  * @module dsh-connect-workbuddy/upstream
  */
@@ -123,7 +128,43 @@ const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
 
+/**
+ * Model-catalog path used by the CN region (and the global fallback). The CN
+ * gateway answers it with the same bytes as its legacy
+ * `/console/enterprises/personal/models` alias. See {@link GLOBAL_CONFIG_PATH}
+ * for why the international region reads a different document.
+ */
+const MODELS_CATALOG_PATH = '/v2/enterprises/personal/models'
+
+/**
+ * Remote product-config path on the global gateway. This is the document the
+ * desktop channel receives; it is the only source that lists the account's
+ * full international chat roster (see {@link DESKTOP_UA}).
+ */
+const GLOBAL_CONFIG_PATH = '/v3/config'
+
 const CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
+/**
+ * User agent of the WorkBuddy desktop app.
+ *
+ * The config service serves a DIFFERENT product configuration per client
+ * channel, selected by this product token — the version suffix is ignored
+ * (`WorkBuddy/5.5.2`, `WorkBuddy/1.0.0` and a bare `WorkBuddy` answer
+ * identically). On the INTERNATIONAL gateway the split decides which models
+ * exist at all:
+ *
+ *   - CLI channel (`CLI/… CodeBuddy/…`) → 35 models that OMIT
+ *     `deepseek-v4.1-flash` and `gpt-6-astra`, even though both are perfectly
+ *     chat-usable (verified: `deepseek-v4.1-flash` streams HTTP 200 and is
+ *     billed `x0.00`);
+ *   - desktop channel → the account's real 20-model chat roster including both.
+ *
+ * The plugin emulates the CLI channel for CHAT but reads the desktop channel's
+ * configuration to learn the account's actual model list. The CN gateway needs
+ * no such switch: its desktop config carries no `cli` agent roster at all, so
+ * CN keeps reading the shared `/v2/enterprises/personal/models` path.
+ */
+const DESKTOP_UA = 'WorkBuddy/5.5.2'
 const JSON_TIMEOUT_MS = 30_000
 const ERROR_BODY_LIMIT = 4096
 
@@ -397,6 +438,40 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
 }
 
 /**
+ * Select the chat-capable models from a catalog-shaped document: parse every
+ * entry, then keep the `cli` agent's roster in its declared order.
+ *
+ * Both the CN personal-models document and the global `/v3/config` document
+ * carry `models` plus an `agents` roster with the same entry shape, so one
+ * selector serves them. Without a usable `cli` roster the whole parsed catalog
+ * is exposed rather than nothing: the roster is an upstream detail that may
+ * change, and an empty answer would silently disarm the provider.
+ */
+export function selectCliModels(rawModels: unknown, agents: unknown): WorkBuddyUpstreamModel[] {
+  const byId = new Map<string, WorkBuddyUpstreamModel>()
+  for (const model of Array.isArray(rawModels) ? rawModels : []) {
+    const parsed = parseUpstreamModel(model)
+    if (parsed !== undefined) byId.set(parsed.id, parsed)
+  }
+  let cliIds: readonly string[] | undefined
+  for (const agent of Array.isArray(agents) ? agents : []) {
+    if (typeof agent === 'object' && agent !== null) {
+      const wrapped = agent as Record<string, unknown>
+      if (wrapped['name'] === 'cli' && Array.isArray(wrapped['models'])) {
+        cliIds = wrapped['models'].filter((id): id is string => typeof id === 'string')
+        break
+      }
+    }
+  }
+  const ids = cliIds !== undefined && cliIds.length > 0 ? cliIds : [...byId.keys()]
+  const models = ids
+    .map(id => byId.get(id))
+    .filter((model): model is WorkBuddyUpstreamModel => model !== undefined)
+  if (models.length === 0) throw new Error('workbuddy model catalog resolved to an empty list')
+  return models
+}
+
+/**
  * Upstream HTTP client. One instance serves the whole plugin; requests take
  * the credential explicitly so token refreshes apply on the next call.
  */
@@ -454,7 +529,29 @@ export class WorkBuddyUpstreamClient {
    * preserving the capability fields the plugin card displays.
    */
   async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
-    const response = await fetch(`${chatBase(credential)}/console/enterprises/personal/models`, {
+    const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
+    if (regionOf(credential.domain) === 'global') {
+      const response = await fetch(`${GLOBAL_BASE}${GLOBAL_CONFIG_PATH}`, {
+        headers: {
+          'Authorization': `Bearer ${credential.accessToken}`,
+          'Accept': 'application/json',
+          ...credential.uid === '' ? {} : { 'X-User-Id': credential.uid },
+          ...credential.domain === '' ? {} : { 'X-Domain': credential.domain },
+          'X-Product': 'SaaS',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Connection': 'close',
+          'User-Agent': DESKTOP_UA,
+        },
+        signal: timeout,
+      })
+      const envelope = await readEnvelope(response)
+      if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+      const data = typeof envelope.data === 'object' && envelope.data !== null
+        ? envelope.data as Record<string, unknown>
+        : {}
+      return selectCliModels(data['models'], data['agents'])
+    }
+    const response = await fetch(`${chatBase(credential)}${MODELS_CATALOG_PATH}`, {
       headers: {
         'Authorization': `Bearer ${credential.accessToken}`,
         'Accept': 'application/json',
@@ -462,7 +559,7 @@ export class WorkBuddyUpstreamClient {
         'Referer': `${originReferer(credential)}/`,
         'User-Agent': CLIENT_UA,
       },
-      signal: signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS),
+      signal: timeout,
     })
     const envelope = await readEnvelope(response)
     if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)

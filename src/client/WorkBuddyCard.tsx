@@ -293,8 +293,19 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     setDraftModels([...visibleModels])
   }
   const configured = settingsScope?.getSnapshot().value
-  const savedContextBudgets = typeof configured === 'object' && configured !== null && typeof (configured as { contextBudgets?: unknown }).contextBudgets === 'object'
-    ? (configured as { contextBudgets: Record<string, number> }).contextBudgets
+  // Context budgets live in the same per-region slot the save writes into, so a
+  // budget set on one region's model is never applied to the other's.
+  const configuredRegion = status.status === 'signed-in'
+    ? (configured as { regions?: Record<string, { contextBudgets?: unknown }> } | undefined)?.regions?.[status.region]
+    : undefined
+  // Before the first save after upgrading, fall back to the legacy flat field
+  // (the Host reads it as the CN region's state, so mirror that here).
+  const legacyContextBudgets = status.status === 'signed-in' && status.region === 'cn'
+    ? (configured as { contextBudgets?: unknown } | undefined)?.contextBudgets
+    : undefined
+  const savedContextBudgetsSource = configuredRegion?.contextBudgets ?? legacyContextBudgets
+  const savedContextBudgets = typeof savedContextBudgetsSource === 'object' && savedContextBudgetsSource !== null
+    ? savedContextBudgetsSource as Record<string, number>
     : {}
   const activeContextBudgets = draftContextBudgets ?? savedContextBudgets
   const dirty = draftModels !== undefined || draftEnabledIds !== undefined || draftImageIds !== undefined || draftContextBudgets !== undefined

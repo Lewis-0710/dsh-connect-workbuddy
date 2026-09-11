@@ -87,15 +87,27 @@ npm pack --dry-run
 ### 8. 验证发布成功
 
 ```bash
-npm view dsh-connect-workbuddy version            # 应显示 X.Y.Z
-npm view dsh-connect-workbuddy dist-tags.latest   # 应为 X.Y.Z
+npm view dsh-connect-workbuddy --prefer-online version            # 应显示 X.Y.Z
+npm view dsh-connect-workbuddy --prefer-online dist-tags.latest   # 应为 X.Y.Z
 ```
 
-> 刚发布后 registry 读缓存可能有短暂延迟，稍等重查即可。
+**权威验证（必须用这条，绕开本机代理缓存）**：
+
+```bash
+curl -s --noproxy '*' -H "Cache-Control: no-cache" https://registry.npmjs.org/dsh-connect-workbuddy \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log('latest:',j['dist-tags'].latest);console.log('has X.Y.Z:',!!j.versions['X.Y.Z']);console.log('published:',j.time['X.Y.Z'])})"
+```
+
+应打印 `latest: X.Y.Z` 与本次发布时间。**再核对 tarball 的 shasum 与本地 `npm pack --dry-run` 输出一致**，确认上传的就是本次构建的代码。
+
+> ⚠️ **本机 `~/.npmrc` 配了本地代理（`proxy`/`https-proxy`，端口 7897）**，`npm view` 与普通 `curl` 会走代理并可能读到**缓存的旧版本**，从而把一次**成功**的发布误判成失败（v1.4.0 发布时就这样误报了）。验证发布**只认上面那条 `--noproxy '*'` 的直连命令**，不要用裸 `npm view` 下结论。
+>
+> 刚发布后 registry 读缓存也可能有短暂延迟，稍等重查即可。
 
 ## 常见问题
 
 - **`npm publish` 报 EOTP**：账号开启了 2FA，**按第 7 步在浏览器授权**（npm CLI 给出的 URL），不要用 `--otp=<码>` 命令行方式——本项目账号绑定的是浏览器授权。链接 404 就重跑 `npm publish` 生成新链接。
-- **发布后 `npm view ... version` 还是旧版本**：registry 缓存延迟，稍等重查 `npm view ... versions`。
+- **发布后 `npm view ... version` 还是旧版本 / 甚至 `@新版本` 报 404**：**先别断定发布失败**。本机 `~/.npmrc` 的本地代理会缓存 registry 响应——用第 8 步的 `curl --noproxy '*'` 直连命令复核，或 `npm view --prefer-online`。v1.4.0 发布时就是这样被误判过一次。真正的失败特征是：`npm publish` 输出里**没有** `+ dsh-connect-workbuddy@X.Y.Z` 那一行。
+- **`npm whoami` 报 E401**：说明 `~/.npmrc` 里的 `_authToken` 已失效（注意 `npm whoami` 偶尔会回显**缓存**的上一次结果，别被它迷惑）。先 `npm login --auth-type=web` 重新登录再发布。
 - **本地开发与发布的关系**：本地开发用 `link:` 安装，与 npm 发布互不影响；npm 发布的包是 `lib/`、README 等静态文件，同一份源码。
 - **LICENSE 版权被改动**：发布前 `grep -F "Copyright (c) 2026 LaoDing" LICENSE` 必须命中；若被改成其他名称，先还原再发布。

@@ -68,10 +68,10 @@ async function main() {
   }
 
   // ---- model catalog ----
-  process.stdout.write('===== GET /console/enterprises/personal/models =====\n')
+  process.stdout.write('===== GET /v2/enterprises/personal/models =====\n')
   let modelsResponse
   try {
-    modelsResponse = await fetch(`${chatBase}/console/enterprises/personal/models`, {
+    modelsResponse = await fetch(`${chatBase}/v2/enterprises/personal/models`, {
       headers: { ...common, ...account.uid === '' ? {} : { 'X-User-Id': account.uid } },
       signal: AbortSignal.timeout(30_000),
     })

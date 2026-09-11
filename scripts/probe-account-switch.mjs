@@ -66,7 +66,7 @@ async function probeAccount({ name, doc }) {
 
   // 1. model catalog
   try {
-    const response = await fetch(`${chatBase}/console/enterprises/personal/models`, { headers, signal: AbortSignal.timeout(30_000) })
+    const response = await fetch(`${chatBase}/v2/enterprises/personal/models`, { headers, signal: AbortSignal.timeout(30_000) })
     const body = await response.json()
     result.catalogHttp = response.status
     result.catalogCode = body.code

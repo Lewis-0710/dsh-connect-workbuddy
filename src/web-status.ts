@@ -22,6 +22,8 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
+import { regionOf } from './upstream.ts'
+import type { WorkBuddyRegion } from './upstream.ts'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
@@ -51,14 +53,19 @@ export interface WorkBuddySettingsPayload {
 export interface WorkBuddyStatusRouteOptions {
   store: WorkBuddyCredentialStore
   client: Pick<WorkBuddyUpstreamClient, 'fetchCredits' | 'fetchCheckinStatus' | 'claimDailyCheckin'>
-  /** The last-refreshed model directory (unfiltered) for card display. */
-  displayModels(): readonly WorkBuddyModelInfo[]
-  /** The user's selection, stored as model ids. */
-  enabledModelIds(): readonly string[]
-  /** Model ids the user opted into image input. */
-  imageModelIds(): readonly string[]
-  /** Saved local DSH context budgets by model id. */
-  contextBudgets(): Readonly<Record<string, number | undefined>>
+  /**
+   * The selected region's last-refreshed model directory (unfiltered) for card
+   * display. Region-scoped because the CN and international apps expose
+   * different rosters; showing one region's directory on the other account is
+   * the bug this parameter exists to prevent.
+   */
+  displayModels(region: WorkBuddyRegion): readonly WorkBuddyModelInfo[]
+  /** The selected region's selection, stored as model ids. */
+  enabledModelIds(region: WorkBuddyRegion): readonly string[]
+  /** Model ids the user opted into image input, for the selected region. */
+  imageModelIds(region: WorkBuddyRegion): readonly string[]
+  /** Saved local DSH context budgets by model id, for the selected region. */
+  contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog from the upstream. */
   discoverModels?(signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
   /** Save updated model settings directly on the host. */
@@ -205,17 +212,21 @@ export async function workBuddyWebStatus(
   // Only user-facing identity and expiry cross to the browser. Token material
   // and stable user IDs stay on the Host.
   const selected = accounts.find(account => account.selected)
+  // Region drives which per-region model directory and selection this document
+  // reports, and which slot the card writes back into.
+  const region = regionOf(credential.domain)
   const account = {
     accountId: selected?.id ?? '',
     accountName: credential.nickname ?? credential.uin ?? credential.uid,
     ...credential.uin === undefined ? {} : { uin: credential.uin },
     ...credential.domain === '' ? {} : { domain: credential.domain },
+    region,
     source: credential.source,
     tokenExpiresAtMs: credential.expiresAtMs,
     accounts: accounts.map(toWebAccount),
-    models: deps.displayModels().map(model => toWebModel(model, deps.contextBudgets())),
-    enabledModelIds: [...deps.enabledModelIds()],
-    imageModelIds: [...deps.imageModelIds()],
+    models: deps.displayModels(region).map(model => toWebModel(model, deps.contextBudgets(region))),
+    enabledModelIds: [...deps.enabledModelIds(region)],
+    imageModelIds: [...deps.imageModelIds(region)],
   }
   const [creditsResult, checkinResult] = await Promise.allSettled([
     deps.client.fetchCredits(credential),
@@ -299,8 +310,11 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
         if (deps.discoverModels === undefined) return json(res, 503, { error: 'model refresh unavailable' })
         try {
+          // The refreshed catalog belongs to the selected credential's region,
+          // so its context budgets must come from that same region's slot.
+          const region = regionOf((await deps.store.resolve()).domain)
           const models = await deps.discoverModels()
-          json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets())) })
+          json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets(region))) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })
         }

@@ -22,15 +22,37 @@
  * @module dsh-connect-workbuddy/client
  */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+// The `slots` service declaration moved host lines: `dsh-client-runtime/client`
+// owned it up to 0.1.1-rc.2, and `dsh-client-ui-renderer/client` owns it from
+// the 0.1.5 line (that package stopped being published). Both are type-only
+// side-effect imports; whichever the host ships supplies the augmentation.
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { WorkBuddyCard } from './WorkBuddyCard.tsx'
 import type { WorkBuddyCardInjected } from './WorkBuddyCard.tsx'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
+
+/**
+ * The browser-side plugin context this entry needs.
+ *
+ * `ClientContext` used to be re-exported by `@deepseek-ai/dsh-client-runtime/client`;
+ * that package stopped at 0.1.1-rc.2 and is neither published nor bundled on the
+ * 0.1.5 line, so it cannot serve as a type source spanning both host lines.
+ * The `slots` / `locale` / `settingsScope` seats the card actually touches are
+ * declared by the client subpath modules imported above, so naming the three
+ * explicitly keeps this entry compilable on either line. Cordis' `Context`
+ * already carries the `effect` fiber API.
+ */
+export type WorkBuddyClientContext = Context & {
+  slots: Context['slots']
+  locale: Context['locale']
+  settingsScope: Context['settingsScope']
+}
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -45,7 +67,7 @@ export const name = 'dsh-connect-workbuddy-client'
 export const inject = ['slots', 'locale', 'settingsScope']
 
 /** Register card copy and the WorkBuddy card under Plugin configuration. */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: WorkBuddyClientContext): void {
   try {
     const namespace = 'settings.workbuddy'
     ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-connect-workbuddy: settings copy')

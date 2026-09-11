@@ -96,3 +96,43 @@ describe('WorkBuddy provider registration', () => {
     await expect(ctx.fiber.dispose()).resolves.toBeUndefined()
   })
 })
+
+describe('regionStateOf', () => {
+  const model = { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 }
+
+  it('reads the pre-region-split flat fields as the CN state only', () => {
+    const legacy = {
+      lastCatalog: [model],
+      enabledModelIds: ['glm-5.3'],
+      imageModelIds: ['glm-5.3'],
+      contextBudgets: { 'glm-5.3': 1_000_000 },
+    }
+    expect(WorkBuddy.regionStateOf(legacy, 'cn')).toEqual(legacy)
+    // The international account must never inherit the CN directory. Doing so
+    // intersected a stale CN catalog with the global one and silently dropped
+    // the user's international picks (the deepseek-v4.1-flash report).
+    expect(WorkBuddy.regionStateOf(legacy, 'global')).toEqual({})
+  })
+
+  it('prefers an explicit region slot over the legacy flat fields', () => {
+    const config = {
+      regions: { cn: { enabledModelIds: ['auto'] } },
+      lastCatalog: [model],
+      enabledModelIds: ['glm-5.3'],
+    }
+    expect(WorkBuddy.regionStateOf(config, 'cn').enabledModelIds).toEqual(['auto'])
+    // An explicit CN slot does not leak into the global region either.
+    expect(WorkBuddy.regionStateOf(config, 'global')).toEqual({})
+  })
+
+  it('returns each region its own slot', () => {
+    const config = {
+      regions: {
+        cn: { enabledModelIds: ['glm-5.3'] },
+        global: { enabledModelIds: ['gpt-5.6-sol'] },
+      },
+    }
+    expect(WorkBuddy.regionStateOf(config, 'cn').enabledModelIds).toEqual(['glm-5.3'])
+    expect(WorkBuddy.regionStateOf(config, 'global').enabledModelIds).toEqual(['gpt-5.6-sol'])
+  })
+})
