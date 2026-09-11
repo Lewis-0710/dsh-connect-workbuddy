@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { workBuddyWebStatus } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
+import { WORKBUDDY_CHECKIN_PATH } from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 
@@ -170,6 +171,40 @@ describe('workBuddyWebStatus', () => {
   })
 })
 
+describe('workBuddyWebStatus region routing', () => {
+  it('reports the signed-in credential region and reads that region\'s model slot', async () => {
+    const seen: string[] = []
+    const status = await workBuddyWebStatus(deps({
+      store: {
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-in' }),
+        resolve: async () => ({ ...CREDENTIAL, domain: 'www.workbuddy.ai' }),
+      } as never,
+      displayModels: region => { seen.push(`models:${region}`); return FALLBACK_WORKBUDDY_MODELS },
+      enabledModelIds: region => { seen.push(`enabled:${region}`); return ['hy3'] },
+      imageModelIds: region => { seen.push(`image:${region}`); return [] },
+      contextBudgets: region => { seen.push(`budgets:${region}`); return {} },
+    }))
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    // The card writes its save into this region's slot, so it must match the
+    // credential — a stale CN region here is what silently dropped the
+    // international account's selected models.
+    expect(status.region).toBe('global')
+    expect(new Set(seen)).toEqual(new Set([
+      'models:global',
+      'enabled:global',
+      'image:global',
+      'budgets:global',
+    ]))
+  })
+
+  it('keeps the CN region for a codebuddy.cn credential', async () => {
+    const status = await workBuddyWebStatus(deps())
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(status.region).toBe('cn')
+  })
+})
+
 describe('registerWorkBuddyStatusRoute', () => {
   it('mounts the usage, account, check-in, and model routes', async () => {
     const registered: string[] = []
@@ -197,5 +232,150 @@ describe('registerWorkBuddyStatusRoute', () => {
       '/plugins/dsh-connect-workbuddy/models/refresh',
     ])
     await ctx.fiber.dispose()
+  })
+
+  /** A captured route entry: the path plus its HTTP handler. */
+  interface CapturedEntry {
+    path: string
+    handler: (req: unknown, res: unknown) => Promise<void> | void
+  }
+
+  /** Mount the status routes against a fake webServer; return the check-in handler. */
+  async function mountCheckinHandler(
+    options: Partial<WorkBuddyStatusRouteOptions> = {},
+  ): Promise<CapturedEntry['handler']> {
+    const captured: CapturedEntry[] = []
+    const FakeWebServer = {
+      name: 'webServer',
+      inject: [] as const,
+      apply(ctx: Context) {
+        ctx.provide('webServer', {
+          register: (entry: { path: string }) => {
+            captured.push(entry as CapturedEntry)
+            return () => {}
+          },
+        })
+      },
+    }
+    const ctx = new Context()
+    await ctx.plugin(FakeWebServer)
+    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
+    registerWorkBuddyStatusRoute(ctx, deps(options))
+    await ctx.fiber.dispose()
+    const checkin = captured.find(entry => entry.path === WORKBUDDY_CHECKIN_PATH)
+    if (checkin === undefined) throw new Error('check-in route was not registered')
+    return checkin.handler
+  }
+
+  /** Minimal POST request; an absent Origin header reads as loopback. */
+  function request(method = 'POST', origin?: string): { method: string; headers: { origin?: string } } {
+    return { method, headers: origin === undefined ? {} : { origin } }
+  }
+
+  /** Response recorder: json() only needs writeHead + end. */
+  function response(): {
+    res: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (payload?: string) => void }
+    status: () => number
+    body: () => unknown
+  } {
+    let statusCode = 0
+    let payload = ''
+    return {
+      res: {
+        writeHead: (status: number) => { statusCode = status },
+        end: (body?: string) => { payload = body ?? '' },
+      },
+      status: () => statusCode,
+      body: () => JSON.parse(payload),
+    }
+  }
+
+  /** Check-in status with every field, matching the upstream document. */
+  function checkinStatus(overrides: Partial<{ active: boolean; todayCheckedIn: boolean; streakDays: number }>) {
+    return {
+      active: true,
+      todayCheckedIn: false,
+      streakDays: 0,
+      dailyCredit: 100,
+      todayCredit: 0,
+      isStreakDay: false,
+      nextStreakDay: 0,
+      streakBonusDays: 0,
+      streakBonusCredit: 0,
+      ...overrides,
+    }
+  }
+
+  it('refuses with 409 and never claims when the activity is inactive (global-account shape)', async () => {
+    const claims: number[] = []
+    const handler = await mountCheckinHandler({
+      client: {
+        fetchCredits: async () => { throw new Error('unused') },
+        fetchCheckinStatus: async () => checkinStatus({ active: false }),
+        claimDailyCheckin: async () => { claims.push(1); return { credit: 100, streakDays: 1, isStreakDay: false } },
+      },
+    })
+    const { res, status, body } = response()
+    await handler(request(), res)
+    expect(status()).toBe(409)
+    expect(claims).toEqual([])
+    expect(body()).toMatchObject({ error: 'check-in activity is not active' })
+  })
+
+  it('answers alreadyCheckedIn without calling the upstream claim', async () => {
+    const claims: number[] = []
+    const handler = await mountCheckinHandler({
+      client: {
+        fetchCredits: async () => { throw new Error('unused') },
+        fetchCheckinStatus: async () => checkinStatus({ active: true, todayCheckedIn: true, streakDays: 11 }),
+        claimDailyCheckin: async () => { claims.push(1); return { credit: 0, streakDays: 11, isStreakDay: false } },
+      },
+    })
+    const { res, status, body } = response()
+    await handler(request(), res)
+    expect(status()).toBe(200)
+    expect(claims).toEqual([])
+    expect(body()).toMatchObject({ alreadyCheckedIn: true })
+  })
+
+  it('claims exactly once for an active unchecked day and returns the refreshed status', async () => {
+    const claims: number[] = []
+    const reads: number[] = []
+    const handler = await mountCheckinHandler({
+      client: {
+        fetchCredits: async () => { throw new Error('unused') },
+        // First read (the guard) reports unchecked; the post-claim refresh
+        // reports the day as claimed, exactly like the upstream does.
+        fetchCheckinStatus: async () => {
+          reads.push(1)
+          return checkinStatus({ todayCheckedIn: reads.length > 1, streakDays: reads.length > 1 ? 6 : 5 })
+        },
+        claimDailyCheckin: async () => { claims.push(1); return { credit: 100, streakDays: 6, isStreakDay: false } },
+      },
+    })
+    const { res, status, body } = response()
+    await handler(request(), res)
+    expect(status()).toBe(200)
+    expect(claims).toHaveLength(1)
+    expect(reads).toHaveLength(2)
+    expect(body()).toMatchObject({
+      alreadyCheckedIn: false,
+      claim: { credit: 100, streakDays: 6 },
+      checkin: { todayCheckedIn: true, streakDays: 6 },
+    })
+  })
+
+  it('refuses non-loopback origins with 403 before touching the upstream', async () => {
+    const handler = await mountCheckinHandler()
+    const { res, status } = response()
+    await handler(request('POST', 'https://evil.example.com'), res)
+    expect(status()).toBe(403)
+  })
+
+  it('refuses non-POST methods with 405', async () => {
+    const handler = await mountCheckinHandler()
+    const { res, status } = response()
+    await handler(request('GET'), res)
+    expect(status()).toBe(405)
   })
 })

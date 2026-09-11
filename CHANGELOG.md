@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.4.0 (2026-09-11)
+
+### Features
+
+- **🆕 正式支持国际版 WorkBuddy AI（www.workbuddy.ai）**——国内版与国际版账号在本插件中获得完全对等的支持，**零配置、零开关，全自动**：
+
+  - **怎么用**：在插件卡片的账号列表里选中国际版账号（凭据文件 `workbuddy-desktop-ai.info`，Gmail 等邮箱登录的那个）即等于切到国际版；选回手机号账号即回到国内版。区域判定完全跟随凭据文件自带的 `domain` 字段（国际版为 `www.workbuddy.ai`，国内版为 `www.codebuddy.cn` / `www.workbuddy.cn`），无需任何手动设置。
+  - **国际账号可用的完整功能**（全部经真实国际账号端到端实测）：
+    - **模型接入**：**20 个模型**进入 DSH 模型选择器，含国际版独有阵容——GPT-6-Astra、GPT-5.6-Sol / Terra / Luna、GPT-5.5 / 5.4 / 5.3-Codex、Gemini-3.5-Flash、免费的 `deepseek-v4.1-flash` / Hy3 / Hy4 preview 等；与国内版共有的 GLM-5.3 / 5.2、Kimi-K3 / K2.6 也正常列出；
+    - **积分倍率**：20/20 模型全部带倍率展示（GPT-6-Astra x6.67、GPT-5.6-Sol x3.47、Auto x0.79、`deepseek-v4.1-flash` / Hy3 x0.00 免费等），与 WorkBuddy AI 官方客户端展示的是同一个 `credits` 字段（已在其 App bundle 中确认渲染数据源一致）；
+    - **积分概览**：按套餐展示国际账号的剩余积分与到期时间（一次性 Bonus Pack 与月度 Free Plan Subscription 均正确区分），查询走国际网关 `https://www.workbuddy.ai`；
+    - **每日签到**：签到状态与领取端点在国际网关实测可用；活动未开启时按钮自动禁用（409 守卫），开启后即可直接领取；
+    - **对话路由**：chat 请求自动走国际网关，wire 协议与国内版同构（业务码 11128 等语义一致，`prepareChatBody` 的改写逻辑两侧通用）。
+  - **核心修复：按渠道读取模型目录**。原先国际账号读 `/console/enterprises/personal/models`（国内路径，国际网关返回 HTTP 500）。改用两区域各自的正确来源后，国际账号首次拿到**完整 20 个模型**：
+    - **国内**：`copilot.tencent.com/v2/enterprises/personal/models`（保持原样，29 个模型中取 `cli` agent 的 15 个）；
+    - **国际**：`www.workbuddy.ai/v3/config` —— 关键在于**必须用桌面端 User-Agent**：配置服务按客户端渠道返回不同产品配置，`CLI/… CodeBuddy/…` 只给 35 个模型并**缺失 `deepseek-v4.1-flash`、`gpt-6-astra`**（尽管两者都能正常对话），而桌面渠道给出账号真实的 20 个 chat 模型。版本号无关（`WorkBuddy/5.5.2`、`WorkBuddy/1.0.0`、裸 `WorkBuddy` 结果一致），是 `WorkBuddy` 这个产品标识选择渠道。国内网关不需要这个切换：其桌面配置的 `cli` agent 为 0 个模型。
+    - 国际账号此前**只剩 `hy3`、`hy4-preview`** 两个可用模型（`deepseek-v4.1-flash` 被静默丢弃、`gpt-6-astra` 不可见），现在 20 个全部就位，与 WorkBuddy AI 客户端的模型菜单一致。
+
+### Fixes
+
+- **目录与勾选按区域隔离（国内 / 国际各一套）**：此前 `lastCatalog` 与 `enabledModelIds` 是全局单槽。国内账号下勾选的模型（含 `deepseek-v4.1-flash`、`hy3-x`）在切到国际账号后，会与**国际目录**求交集——凡是国际目录里没有的 id 都被静默丢弃：国际账号实际只剩 `hy3`、`hy4-preview` 两个模型可用（`src/index.ts` 启动时 `deriveCatalog(国际目录, 国内勾选)`）。
+  - 现改为 `regions.cn` / `regions.global` 两套独立槽位（目录、勾选、图片开关、上下文预算各一份），互不干扰；切换账号不再覆盖另一区域的配置。
+  - 新增按区域区分的静态 fallback 目录：国际账号在首次拉取前不再被塞入国内模型清单（`FALLBACK_WORKBUDDY_MODELS_GLOBAL`，2026-09-11 从国际网关桌面渠道配置实测捕获 20 个模型及其倍率，含免费的 `deepseek-v4.1-flash`）。
+  - 旧的扁平字段保留为**国内区域的迁移来源**（旧配置一律来自国内端点），国际区域绝不继承——这正是丢勾选的根源。
+  - 卡片保存改为写入当前账号所属区域的槽位；usage 文档新增 `region` 字段供卡片定位。
+- 三个探测脚本（`probe-models` / `probe-credits` / `probe-account-switch`）同步改用 `/v2/...` 路径：此前它们对国际账号同样会 500，导致诊断输出误导。
+- 新增只读评估脚本 `scripts/probe-global-eval.mjs`：对比国际网关 `/v2/...`（500）与 `/v3/config`（200）两条取目录路径，并验证积分与签到端点——本轮的渠道发现即由它得出。
+
+### Tests
+
+- 新增 `fetchModels` 回归测试：stub 上游后断言 CN 凭据（`codebuddy.cn` / `workbuddy.cn`）拼出 `copilot.tencent.com/v2/enterprises/personal/models`、国际凭据（`workbuddy.ai`）拼出 `www.workbuddy.ai/v3/config`，并断言国际请求携带**桌面端 User-Agent**（`WorkBuddy/5.5.2`，CLI UA 会拿到缺模型的 35 个）、CN 请求**不得**携带桌面端 UA（国内桌面配置的 `cli` agent 为空）。把「按渠道取目录」钉死，防止日后退回会丢模型的取法。
+- `regionOf` 测试补上 `www.workbuddy.cn`（国内版新 domain 形态，实测本机存在）。
+- 新增区域隔离测试：`regionStateOf` 断言旧扁平字段只被读作国内状态、国际区域绝不继承、显式槽位优先；`fallbackModelsFor` 断言国内清单不得泄漏进国际（国内无 `gpt-*`/`gemini-*`，且 `default-model` 仅属国际）；web-status 断言文档携带的 `region` 与凭据域一致、且四个区域化访问器收到的都是该区域。
+- **每日签到（领取）路由的守卫逻辑首次获得直接 handler 测试**（实测两区域端点行为后补齐）：
+  - 活动未开启（国际账号实测形态，`active:false`）→ 409 且**绝不调用**上游领取；
+  - 今日已签到 → 200 `alreadyCheckedIn` 且不调用上游领取（幂等保护）；
+  - 活动开启且未签到 → 恰好领取一次、领取后重读状态并返回刷新后的连签天数；
+  - 非回环 Origin → 403、非 POST → 405，两道安全守卫均在触碰上游前拒绝。
+  - 实测依据（全部经插件真实代码路径、零状态变更验证）：CN 网关领取端点对已签到账号返回业务拒绝「今天已签到，请明天再来」；国际网关同路径存在，对未开启活动返回「签到活动未开启或已过期」（均为 HTTP 400 业务码而非 404，证明端点存在、鉴权与协议一致）。国际版 App bundle 中确认签到端点与插件同路径，官方 App 对签到走无前缀形态、`get-user-resource` 才需 `/v2` 前缀——插件统一 `/v2` 形态在两侧网关均实测可用。
+
 ## 1.3.0 (2026-09-10)
 
 ### Breaking Changes

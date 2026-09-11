@@ -105,6 +105,13 @@ export interface WorkBuddyWebAccount {
 
 export type WorkBuddyWebPackage = WorkBuddyWebCreditPackage
 
+/**
+ * Region of the signed-in credential: the CN app (`codebuddy.cn` /
+ * `workbuddy.cn`) or the international WorkBuddy AI app (`workbuddy.ai`).
+ * The card uses this to read and write the matching per-region model slot.
+ */
+export type WorkBuddyWebRegion = 'cn' | 'global'
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebUsage =
   | { status: 'signed-out'; accounts: readonly WorkBuddyWebAccount[]; message?: string }
@@ -114,6 +121,8 @@ export type WorkBuddyWebUsage =
     accountName: string
     uin?: string
     domain?: string
+    /** Which per-region model directory and selection this account owns. */
+    region: WorkBuddyWebRegion
     source?: 'desktop' | 'dsh'
     tokenExpiresAtMs: number
     accounts: readonly WorkBuddyWebAccount[]

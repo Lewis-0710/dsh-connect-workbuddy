@@ -261,8 +261,19 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
   const activeImageIds = draftImageIds ?? savedImageIds
   const configured = settingsScope?.getSnapshot().value
-  const savedContextBudgets = typeof configured === 'object' && configured !== null && typeof (configured as { contextBudgets?: unknown }).contextBudgets === 'object'
-    ? (configured as { contextBudgets: Record<string, number> }).contextBudgets
+  // Context budgets live in the same per-region slot the save writes into, so a
+  // budget set on one region's model is never applied to the other's.
+  const configuredRegion = status.status === 'signed-in'
+    ? (configured as { regions?: Record<string, { contextBudgets?: unknown }> } | undefined)?.regions?.[status.region]
+    : undefined
+  // Before the first save after upgrading, fall back to the legacy flat field
+  // (the Host reads it as the CN region's state, so mirror that here).
+  const legacyContextBudgets = status.status === 'signed-in' && status.region === 'cn'
+    ? (configured as { contextBudgets?: unknown } | undefined)?.contextBudgets
+    : undefined
+  const savedContextBudgetsSource = configuredRegion?.contextBudgets ?? legacyContextBudgets
+  const savedContextBudgets = typeof savedContextBudgetsSource === 'object' && savedContextBudgetsSource !== null
+    ? savedContextBudgetsSource as Record<string, number>
     : {}
   const activeContextBudgets = draftContextBudgets ?? savedContextBudgets
   const dirty = draftModels !== undefined || draftEnabledIds !== undefined || draftImageIds !== undefined || draftContextBudgets !== undefined
@@ -295,19 +306,29 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
 
   const saveModels = async (): Promise<void> => {
     if (settingsScope === undefined) return
+    if (status.status !== 'signed-in') return
     setSaving(true)
     setSaveError(undefined)
     try {
-      // Save the raw directory plus the pure selection. The Host derives the
-      // runtime catalog from these two on save/restart, so re-opening the card
-      // re-reads WorkBuddy's current catalog instead of a stale snapshot.
+      // Save this region's raw directory plus the pure selection. The Host
+      // derives the runtime catalog from these on save/restart, so re-opening
+      // the card re-reads WorkBuddy's current catalog instead of a stale
+      // snapshot. The CN app and the international app expose different
+      // rosters, so the write targets the slot keyed by the signed-in account's
+      // region: switching accounts no longer clobbers the other region's picks.
       // toPersistedWorkBuddyModel strips the card-only fields BY KEY: explicit
       // `undefined` values are rejected by the settings write's strict JSON
       // codec, which used to fail the whole save silently.
-      await settingsScope.set('lastCatalog', visibleModels.map(toPersistedWorkBuddyModel))
-      await settingsScope.set('enabledModelIds', [...activeEnabledIds])
-      await settingsScope.set('imageModelIds', [...activeImageIds])
-      await settingsScope.set('contextBudgets', activeContextBudgets)
+      const configuredRegions = (configured as { regions?: Record<string, unknown> } | undefined)?.regions
+      await settingsScope.set('regions', {
+        ...typeof configuredRegions === 'object' && configuredRegions !== null ? configuredRegions : {},
+        [status.region]: {
+          lastCatalog: visibleModels.map(toPersistedWorkBuddyModel),
+          enabledModelIds: [...activeEnabledIds],
+          imageModelIds: [...activeImageIds],
+          contextBudgets: activeContextBudgets,
+        },
+      })
       discardModels()
       await refreshUsage()
     } catch (error: unknown) {

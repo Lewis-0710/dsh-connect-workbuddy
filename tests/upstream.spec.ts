@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { WorkBuddyCredential } from '../src/auth.ts'
 import {
+  WorkBuddyUpstreamClient,
   classifyUpstreamError,
   parseCreditMultiplier,
   parseReasoning,
@@ -64,7 +66,116 @@ describe('regionOf', () => {
     expect(regionOf('www.workbuddy.ai')).toBe('global')
     expect(regionOf('app.workbuddy.ai')).toBe('global')
     expect(regionOf('www.codebuddy.cn')).toBe('cn')
+    expect(regionOf('www.workbuddy.cn')).toBe('cn')
     expect(regionOf('')).toBe('cn')
+  })
+})
+
+describe('WorkBuddyUpstreamClient.fetchModels', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function credential(domain: string): WorkBuddyCredential {
+    return {
+      accessToken: 'at',
+      refreshToken: 'rt',
+      expiresAtMs: 0,
+      domain,
+      uid: 'u',
+      source: 'desktop',
+      filePath: '/tmp/workbuddy-desktop.info',
+    }
+  }
+
+  /** Run fetchModels against a stubbed upstream; return the URL it called. */
+  async function fetchModelsUrl(domain: string): Promise<string> {
+    const urls: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      urls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 200_000, maxOutputTokens: 48_000 }],
+            agents: [{ name: 'cli', models: ['glm-5.3'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    const models = await new WorkBuddyUpstreamClient().fetchModels(credential(domain))
+    expect(models.map(model => model.id)).toEqual(['glm-5.3'])
+    expect(urls).toHaveLength(1)
+    const url = urls[0]
+    if (url === undefined) throw new Error('fetchModels performed no upstream request')
+    return url
+  }
+
+  it('auto-routes CN and global accounts by credential domain', async () => {
+    // CN reads the shared personal-models path on its chat gateway. The global
+    // gateway serves the account's chat roster as the DESKTOP channel's product
+    // config at /v3/config: its personal-models path returns HTTP 500 there,
+    // and the CLI channel's config omits chat-usable models
+    // (deepseek-v4.1-flash, gpt-6-astra) — so the desktop user agent is what
+    // selects the right document. This pins the international-version fixes.
+    expect(await fetchModelsUrl('www.codebuddy.cn'))
+      .toBe('https://copilot.tencent.com/v2/enterprises/personal/models')
+    expect(await fetchModelsUrl('www.workbuddy.cn'))
+      .toBe('https://copilot.tencent.com/v2/enterprises/personal/models')
+    expect(await fetchModelsUrl('www.workbuddy.ai'))
+      .toBe('https://www.workbuddy.ai/v3/config')
+  })
+
+  it('sends the desktop user agent on the global config request', async () => {
+    const seen: Record<string, string> = {}
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      Object.assign(seen, init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', maxInputTokens: 1_000_000, maxOutputTokens: 128_000, credits: 'x0.00' }],
+            agents: [{ name: 'cli', models: ['deepseek-v4.1-flash'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    const models = await new WorkBuddyUpstreamClient().fetchModels(credential('www.workbuddy.ai'))
+    // The CLI user agent returns a 35-model roster without this model; only the
+    // desktop channel's document carries the account's real chat list.
+    expect(seen['User-Agent']).toBe('WorkBuddy/5.5.2')
+    expect(seen['X-Product']).toBe('SaaS')
+    expect(models.map(model => model.id)).toEqual(['deepseek-v4.1-flash'])
+    expect(models[0]?.creditMultiplier).toBe(0)
+  })
+
+  it('keeps the CLI user agent on the CN gateway', async () => {
+    const seen: Record<string, string> = {}
+    vi.stubGlobal('fetch', async (_url: string, init: { headers: Record<string, string> }) => {
+      Object.assign(seen, init.headers)
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          code: 0,
+          msg: 'OK',
+          data: {
+            models: [{ id: 'glm-5.3', name: 'GLM-5.3', maxInputTokens: 1_000_000, maxOutputTokens: 48_000 }],
+            agents: [{ name: 'cli', models: ['glm-5.3'] }],
+          },
+        }),
+      } as unknown as Response
+    })
+    await new WorkBuddyUpstreamClient().fetchModels(credential('www.codebuddy.cn'))
+    // The CN desktop config carries no `cli` roster at all, so its gateway must
+    // keep receiving the CLI agent the plugin actually chats as.
+    expect(seen['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
   })
 })
 

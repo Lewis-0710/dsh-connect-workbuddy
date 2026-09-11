@@ -32,7 +32,7 @@ async function main() {
     'Referer': `${billingBase}/`,
   }
 
-  const modelsResponse = await fetch(`${chatBase}/console/enterprises/personal/models`, {
+  const modelsResponse = await fetch(`${chatBase}/v2/enterprises/personal/models`, {
     headers: { ...common, ...account.uid === '' ? {} : { 'X-User-Id': account.uid } },
     signal: AbortSignal.timeout(30_000),
   })
