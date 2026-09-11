@@ -27,13 +27,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
-import { createWorkBuddyAdapter, workBuddyDisplayName, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
+import { createWorkBuddyAdapter, workBuddyModelDisplayName, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
-export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
+export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyModelDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
   deriveCatalog,
@@ -94,7 +94,6 @@ export {
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
   WORKBUDDY_USAGE_PATH,
-  toPersistedWorkBuddyModel,
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
@@ -162,17 +161,18 @@ export function apply(ctx: Context, config: Config): void {
 
   const enabledSet = (value: Config): ReadonlySet<string> => new Set(value.enabledModelIds ?? [])
   const imageSet = (value: Config): ReadonlySet<string> => new Set(value.imageModelIds ?? [])
-  // Stamp the user's explicit image opt-in onto a model list. This is the ONLY
-  // source of `multimodal`; upstream capability flags are never trusted. Applied
-  // to every runtime catalog path (save, discovery, startup seed) so a model's
-  // image capability is consistent across them.
+  // Stamp image capability onto a model list. When the user has configured
+  // explicit image choices (imageModelIds), those take precedence. Otherwise,
+  // the upstream supportsImages/multimodal flag is preserved as the default.
   const withImageSelection = (
     models: readonly WorkBuddyModelInfo[],
     images: ReadonlySet<string>,
   ): readonly WorkBuddyModelInfo[] =>
     models.map(model => ({
       ...model,
-      ...images.has(model.id) ? { multimodal: true } : { multimodal: false },
+      multimodal: images.size === 0
+        ? (model.supportsImages === true || model.multimodal === true)
+        : images.has(model.id),
     }))
   // Runtime catalog derives from the last-refreshed directory plus the user's
   // selection; an empty selection serves the whole directory so a never-
@@ -188,15 +188,34 @@ export function apply(ctx: Context, config: Config): void {
       imageSet(value),
     )
   // What the card displays: the last-refreshed directory, so the user re-reads
-  // the current catalog rather than a stale saved snapshot.
+  let discoveredCatalog: readonly WorkBuddyModelInfo[] | undefined
+
+  // What the card displays: the last-refreshed directory, or the discovered
+  // upstream catalog, falling back to the static catalog.
   const displayModels = (value: Config): readonly WorkBuddyModelInfo[] =>
-    value.lastCatalog?.length ? value.lastCatalog : FALLBACK_WORKBUDDY_MODELS
+    value.lastCatalog?.length ? value.lastCatalog : (discoveredCatalog ?? FALLBACK_WORKBUDDY_MODELS)
 
   let current = () => config
   let invalidateCatalog = (): void => {}
   const discoverModels = async (signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]> => {
     const credential = await store.resolve()
-    return client.fetchModels(credential, signal)
+    const fetched = await client.fetchModels(credential, signal)
+    discoveredCatalog = fetched
+    return fetched
+  }
+
+  const saveSettings = async (payload: import('./web-status.ts').WorkBuddySettingsPayload): Promise<void> => {
+    const prev = current()
+    const next: Config = {
+      ...prev,
+      ...payload.lastCatalog !== undefined ? { lastCatalog: [...payload.lastCatalog] } : {},
+      ...payload.enabledModelIds !== undefined ? { enabledModelIds: [...payload.enabledModelIds] } : {},
+      ...payload.imageModelIds !== undefined ? { imageModelIds: [...payload.imageModelIds] } : {},
+      ...payload.contextBudgets !== undefined ? { contextBudgets: { ...payload.contextBudgets } } : {},
+    }
+    catalog.set(configuredModels(next))
+    invalidateCatalog()
+    await ctx.settings.update(WORKBUDDY_SETTINGS_NS, payload)
   }
 
   // Same-origin routes backing the Plugin-configuration card. `webServer`
@@ -210,6 +229,7 @@ export function apply(ctx: Context, config: Config): void {
     imageModelIds: () => current().imageModelIds ?? [],
     contextBudgets: () => current().contextBudgets ?? {},
     discoverModels,
+    saveSettings,
   }))
 
   ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
@@ -289,7 +309,7 @@ export function apply(ctx: Context, config: Config): void {
           )
           return next.map(model => ({
             id: model.id,
-            name: workBuddyDisplayName(model),
+            name: workBuddyModelDisplayName(model),
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
             inputModalities: workBuddyModelInput(model),
@@ -315,6 +335,7 @@ export function apply(ctx: Context, config: Config): void {
           if (stopped) return
           const models = await client.fetchModels(credential)
           if (stopped) return
+          discoveredCatalog = models
           catalog.set(withImageSelection(
             deriveCatalog(models, enabledSet(current()), current().contextBudgets ?? {}),
             imageSet(current()),

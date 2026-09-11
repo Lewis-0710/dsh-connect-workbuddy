@@ -20,6 +20,8 @@ export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/mod
 export const WORKBUDDY_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/accounts/refresh'
 /** Plugin-owned daily check-in action endpoint. */
 export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
+/** Plugin-owned settings save endpoint. */
+export const WORKBUDDY_SETTINGS_SAVE_PATH = '/plugins/dsh-connect-workbuddy/settings/save'
 
 /** One credit package as the upstream returns it, node-free. */
 export interface WorkBuddyWebCreditPackage {
@@ -69,6 +71,7 @@ export interface WorkBuddyWebModel {
   maxTokens: number
   creditMultiplier?: number
   multimodal?: boolean
+  supportsImages?: boolean
   reasoning?: {
     supportedEfforts?: readonly string[]
     defaultEffort?: string

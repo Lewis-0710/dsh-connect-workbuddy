@@ -54,6 +54,7 @@ export interface WorkBuddyUpstreamModel {
    * which proved insufficiently reliable. See `catalog.ts` / `index.ts`.
    */
   multimodal?: boolean
+  supportsImages?: boolean
   reasoning?: WorkBuddyReasoning
   descriptionZh?: string
   descriptionEn?: string
@@ -380,12 +381,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
   const creditMultiplier = parseCreditMultiplier(raw['credits'])
   const reasoning = parseReasoning(raw['reasoning'])
   const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
+  const supportsImages = typeof raw['supportsImages'] === 'boolean' ? raw['supportsImages'] : undefined
   return {
     id,
     name,
     contextWindow: input,
     maxTokens: output,
     ...creditMultiplier === undefined ? {} : { creditMultiplier },
+    ...supportsImages === undefined ? {} : { supportsImages, multimodal: supportsImages },
     ...reasoning === undefined ? {} : { reasoning },
     ...descriptionZh === undefined ? {} : { descriptionZh },
     ...descriptionEn === undefined ? {} : { descriptionEn },
@@ -447,7 +450,7 @@ export class WorkBuddyUpstreamClient {
   }
 
   /**
-   * GET the personal model catalog and keep the `cli` agent's models only,
+   * GET the personal model catalog and return all available models,
    * preserving the capability fields the plugin card displays.
    */
   async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
@@ -467,28 +470,15 @@ export class WorkBuddyUpstreamClient {
       ? envelope.data as Record<string, unknown>
       : {}
     const rawModels = Array.isArray(data['models']) ? data['models'] : []
-    const agents = Array.isArray(data['agents']) ? data['agents'] : []
-    let cliIds: readonly string[] | undefined
-    for (const agent of agents) {
-      if (typeof agent === 'object' && agent !== null) {
-        const wrapped = agent as Record<string, unknown>
-        if (wrapped['name'] === 'cli' && Array.isArray(wrapped['models'])) {
-          cliIds = wrapped['models'].filter((id): id is string => typeof id === 'string')
-          break
-        }
-      }
-    }
-    const byId = new Map<string, WorkBuddyUpstreamModel>()
+    const models: WorkBuddyUpstreamModel[] = []
+    const seen = new Set<string>()
     for (const model of rawModels) {
       const parsed = parseUpstreamModel(model)
-      if (parsed !== undefined) byId.set(parsed.id, parsed)
+      if (parsed !== undefined && !seen.has(parsed.id)) {
+        seen.add(parsed.id)
+        models.push(parsed)
+      }
     }
-    // Without a `cli` agent list, expose every enabled model rather than an
-    // empty catalog: the agent roster is an upstream detail that may change.
-    const ids = cliIds !== undefined && cliIds.length > 0 ? cliIds : [...byId.keys()]
-    const models = ids
-      .map(id => byId.get(id))
-      .filter((model): model is WorkBuddyUpstreamModel => model !== undefined)
     if (models.length === 0) throw new Error('workbuddy model catalog resolved to an empty list')
     return models
   }

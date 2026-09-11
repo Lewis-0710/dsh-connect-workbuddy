@@ -27,11 +27,10 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_SETTINGS_SAVE_PATH,
   WORKBUDDY_USAGE_PATH,
-  toPersistedWorkBuddyModel,
 } from '../status-paths.ts'
 import type { WorkBuddyWebModel, WorkBuddyWebUsage } from '../status-paths.ts'
-import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -116,7 +115,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const [draftImageIds, setDraftImageIds] = useState<Set<string> | undefined>(undefined)
   const [draftContextBudgets, setDraftContextBudgets] = useState<Record<string, number> | undefined>(undefined)
   const [saving, setSaving] = useState(false)
-  /** Save failure surfaced next to the buttons; cleared by the next attempt. */
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
   const [checkingIn, setCheckingIn] = useState(false)
@@ -234,6 +232,9 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       // fresh catalog by model id, so renames and additions never silently lose
       // enabled choices, image opt-ins, or context budgets.
       const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
+      const autoEnabled = stillEnabled.length > 0
+        ? stillEnabled
+        : fresh.filter(model => model.nativeContextWindow >= 1_000_000).map(model => model.id)
       const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
       const stillBudgets: Record<string, number> = {}
       for (const id of freshIds) {
@@ -241,7 +242,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
         if (typeof budget === 'number') stillBudgets[id] = budget
       }
       setDraftModels(fresh)
-      setDraftEnabledIds(new Set(stillEnabled))
+      setDraftEnabledIds(new Set(autoEnabled))
       setDraftImageIds(new Set(stillImages))
       setDraftContextBudgets(stillBudgets)
     } catch (error: unknown) {
@@ -256,10 +257,41 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   // stale saved snapshot. Enabled flags come from the user's stored selection,
   // re-mapped onto the current catalog by model id.
   const visibleModels = draftModels ?? (status.status === 'signed-in' ? status.models : [])
-  const savedEnabledIds = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
+
+  // When no model IDs are saved yet, default to models with context window >= 1M.
+  const defaultEnabledIds = visibleModels.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id)
+  const savedEnabledIds = status.status === 'signed-in'
+    ? (status.enabledModelIds.length > 0 ? new Set(status.enabledModelIds) : new Set(defaultEnabledIds))
+    : new Set<string>()
   const activeEnabledIds = draftEnabledIds ?? savedEnabledIds
-  const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
+
+  // When no image IDs are saved yet, default to models that declare image support upstream.
+  const defaultImageIds = visibleModels.filter(m => m.supportsImages === true || m.multimodal === true).map(m => m.id)
+  const savedImageIds = status.status === 'signed-in'
+    ? (status.imageModelIds.length > 0 ? new Set(status.imageModelIds) : new Set(defaultImageIds))
+    : new Set<string>()
   const activeImageIds = draftImageIds ?? savedImageIds
+
+  /** Reset all selections to defaults based on upstream data and 1M context rule. */
+  const resetToDefaults = (): void => {
+    // 选中项：上下文大于等于1M的默认选中
+    const defaultEnabled = new Set(
+      visibleModels.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id),
+    )
+    // 图片是否勾选取决于上游返回的数据
+    const defaultImages = new Set(
+      visibleModels.filter(m => m.supportsImages === true || m.multimodal === true).map(m => m.id),
+    )
+    // 上下文大小取决于上游返回的数据
+    const defaultBudgets: Record<string, number> = {}
+    for (const m of visibleModels) {
+      defaultBudgets[m.id] = m.nativeContextWindow
+    }
+    setDraftEnabledIds(defaultEnabled)
+    setDraftImageIds(defaultImages)
+    setDraftContextBudgets(defaultBudgets)
+    setDraftModels([...visibleModels])
+  }
   const configured = settingsScope?.getSnapshot().value
   const savedContextBudgets = typeof configured === 'object' && configured !== null && typeof (configured as { contextBudgets?: unknown }).contextBudgets === 'object'
     ? (configured as { contextBudgets: Record<string, number> }).contextBudgets
@@ -272,6 +304,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     if (!next.delete(modelId)) next.add(modelId)
     setDraftEnabledIds(next)
     setDraftModels([...visibleModels])
+    setSaveError(undefined)
   }
 
   const toggleImage = (modelId: string): void => {
@@ -279,11 +312,13 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     if (!next.delete(modelId)) next.add(modelId)
     setDraftImageIds(next)
     setDraftModels([...visibleModels])
+    setSaveError(undefined)
   }
 
   const setContextBudget = (modelId: string, budget: number): void => {
     setDraftContextBudgets({ ...activeContextBudgets, [modelId]: budget })
     setDraftModels([...visibleModels])
+    setSaveError(undefined)
   }
 
   const discardModels = (): void => {
@@ -291,29 +326,57 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     setDraftEnabledIds(undefined)
     setDraftImageIds(undefined)
     setDraftContextBudgets(undefined)
+    setSaveError(undefined)
   }
 
   const saveModels = async (): Promise<void> => {
-    if (settingsScope === undefined) return
     setSaving(true)
     setSaveError(undefined)
     try {
-      // Save the raw directory plus the pure selection. The Host derives the
-      // runtime catalog from these two on save/restart, so re-opening the card
-      // re-reads WorkBuddy's current catalog instead of a stale snapshot.
-      // toPersistedWorkBuddyModel strips the card-only fields BY KEY: explicit
-      // `undefined` values are rejected by the settings write's strict JSON
-      // codec, which used to fail the whole save silently.
-      await settingsScope.set('lastCatalog', visibleModels.map(toPersistedWorkBuddyModel))
-      await settingsScope.set('enabledModelIds', [...activeEnabledIds])
-      await settingsScope.set('imageModelIds', [...activeImageIds])
-      await settingsScope.set('contextBudgets', activeContextBudgets)
+      const catalogToSave = visibleModels.map(model => ({
+        ...model,
+        contextWindow: model.nativeContextWindow,
+        nativeContextWindow: undefined,
+        multimodal: undefined,
+      }))
+      const enabledList = [...activeEnabledIds]
+      const imageList = [...activeImageIds]
+      const budgetMap: Record<string, number> = {}
+      for (const model of visibleModels) {
+        budgetMap[model.id] = activeContextBudgets[model.id] ?? model.nativeContextWindow
+      }
+
+      // 1. Direct server-side save via HTTP POST
+      const saveRes = await fetch(WORKBUDDY_SETTINGS_SAVE_PATH, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          lastCatalog: catalogToSave,
+          enabledModelIds: enabledList,
+          imageModelIds: imageList,
+          contextBudgets: budgetMap,
+        }),
+      })
+      if (!saveRes.ok) {
+        const body = await saveRes.json().catch(() => undefined) as { error?: string } | undefined
+        throw new Error(body?.error ?? `HTTP ${saveRes.status}`)
+      }
+
+      // 2. Mirror into settingsScope so client runtime stays consistent
+      if (settingsScope !== undefined && settingsScope.getSnapshot().writable === true) {
+        await settingsScope.set('lastCatalog', catalogToSave).catch(() => {})
+        await settingsScope.set('enabledModelIds', enabledList).catch(() => {})
+        await settingsScope.set('imageModelIds', imageList).catch(() => {})
+        await settingsScope.set('contextBudgets', budgetMap).catch(() => {})
+      }
+
       discardModels()
       await refreshUsage()
     } catch (error: unknown) {
-      // Drafts stay dirty on failure, so the button remains pressable for a
-      // retry; the reason is shown instead of a silent unhandled rejection.
-      if (mounted.current) setSaveError(error instanceof Error ? error.message : t('row.requestFailed'))
+      if (mounted.current) {
+        setSaveError(error instanceof Error ? error.message : t('row.requestFailed'))
+      }
     } finally {
       if (mounted.current) setSaving(false)
     }
@@ -335,7 +398,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
         aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
         onClick={() => { setOpen(!open) }}
       >
-        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
         <span className="dsm-plugin-card-head">
           <span className="dsm-plugin-card-title">{title}</span>
           <span className="dsm-plugin-card-description">{t('row.desc')}</span>
@@ -485,14 +547,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           <h3 className="dsm-workbuddy-models-title">{t('row.modelsTitle')}</h3>
                           <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                         </div>
-                        <button
-                          type="button"
-                          className="dsm-btn dsm-btn-outline"
-                          disabled={busy}
-                          onClick={() => { void refreshModels() }}
-                        >
-                          {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
-                        </button>
+                        <div className="dsm-workbuddy-models-head-actions">
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy}
+                            onClick={() => { void refreshModels() }}
+                          >
+                            {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
+                          </button>
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy || saving}
+                            onClick={resetToDefaults}
+                          >
+                            {t('row.modelsResetDefaults')}
+                          </button>
+                        </div>
                       </div>
                       <div className="dsm-workbuddy-model-list">
                         {visibleModels.map(model => (
@@ -528,7 +600,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                       <input
                                         type="radio"
                                         name={`context-${model.id}`}
-                                        checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}
+                                        checked={activeContextBudgets[model.id] === 200_000}
                                         disabled={settingsScope?.getSnapshot().writable !== true || saving}
                                         onChange={() => { setContextBudget(model.id, 200_000) }}
                                       />
@@ -539,7 +611,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                   <input
                                     type="radio"
                                     name={`context-${model.id}`}
-                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow}
+                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow || activeContextBudgets[model.id] === undefined}
                                     disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
                                     onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
                                   />
@@ -559,6 +631,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                         ))}
                       </div>
                       <p className="dsm-workbuddy-model-capability-note">{t('row.modelCapabilityPending')}</p>
+                      {saveError === undefined ? null
+                        : <p className="dsm-workbuddy-usage-error">{t('row.saveError', { message: saveError })}</p>}
                       <div className="dsm-workbuddy-model-actions">
                         <a
                           className="dsm-workbuddy-usage-cheer"
@@ -569,8 +643,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           {t('row.cheer')}
                           <span className="dsm-workbuddy-usage-cheer-star" aria-hidden="true">★</span>
                         </a>
-                        {saveError === undefined ? null
-                          : <span className="dsm-workbuddy-model-save-error">{t('row.saveError', { message: saveError })}</span>}
                         <div className="dsm-workbuddy-model-actions-buttons">
                           <button type="button" className="dsm-btn dsm-btn-outline" disabled={!dirty || saving} onClick={discardModels}>
                             {t('row.discard')}

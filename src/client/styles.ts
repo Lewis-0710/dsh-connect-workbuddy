@@ -72,6 +72,7 @@ export const WORKBUDDY_CARD_CSS = `
 @media (max-width:760px){.dsm-workbuddy-credits-panels{grid-template-columns:1fr}.dsm-workbuddy-credit-panel-total{align-items:flex-start;text-align:left}.dsm-workbuddy-credit-total-body{align-items:flex-start}}
 .dsm-workbuddy-models{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
 .dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dsm-workbuddy-models-head-actions{display:flex;align-items:center;gap:8px}
 .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
 .dsm-workbuddy-models-summary{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 .dsm-workbuddy-model-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;overflow:hidden}

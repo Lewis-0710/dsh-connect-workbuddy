@@ -9,8 +9,8 @@ const MODELS: readonly WorkBuddyModelInfo[] = [
 ]
 
 describe('deriveCatalog', () => {
-  it('does not pre-mark any fallback model as image-capable', () => {
-    expect(FALLBACK_WORKBUDDY_MODELS.every(model => model.multimodal !== true)).toBe(true)
+  it('contains image-capable models from upstream supportsImages in fallback catalog', () => {
+    expect(FALLBACK_WORKBUDDY_MODELS.some(model => model.supportsImages === true || model.multimodal === true)).toBe(true)
   })
 
   it('serves the whole directory when nothing is enabled yet', () => {
@@ -18,20 +18,21 @@ describe('deriveCatalog', () => {
     expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])
   })
 
-  it('defaults every model above 200K to 200K and preserves smaller maxima', () => {
+  it('defaults to models >= 1M matching their native context', () => {
     const derived = deriveCatalog([
       ...MODELS,
       { id: 'kimi', name: 'Kimi', contextWindow: 256_000, maxTokens: 32_000 },
       { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
     ], new Set())
-    expect(derived.map(model => model.contextWindow)).toEqual([200_000, 200_000, 200_000, 200_000, 192_000])
+    expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])
+    expect(derived.map(model => model.contextWindow)).toEqual([1_000_000, 1_000_000, 1_000_000])
   })
 
-  it('keeps only selected models and applies explicit 1M budgets', () => {
+  it('keeps only selected models and applies explicit budgets', () => {
     const derived = deriveCatalog(
       MODELS,
       new Set(['deepseek-v4-pro', 'glm-5.3']),
-      { 'deepseek-v4-pro': 1_000_000 },
+      { 'glm-5.3': 200_000 },
     )
     expect(derived.map(model => [model.id, model.contextWindow])).toEqual([
       ['glm-5.3', 200_000],

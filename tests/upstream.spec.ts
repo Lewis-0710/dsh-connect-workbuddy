@@ -118,33 +118,36 @@ describe('parseUpstreamModel', () => {
     expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
   })
 
-  it('never infers multimodal from the upstream image flags', () => {
-    // The upstream `supportsImages`/`disabledMultimodal` flags are not reliable,
-    // so image input is decided by the user's explicit opt-in (imageModelIds).
+  it('parses supportsImages and multimodal from the upstream image flags', () => {
     expect(parseUpstreamModel({
       id: 'a',
       maxInputTokens: 1,
       maxOutputTokens: 1,
       supportsImages: true,
-    })?.multimodal).toBeUndefined()
+    })?.supportsImages).toBe(true)
+    expect(parseUpstreamModel({
+      id: 'a',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+      supportsImages: true,
+    })?.multimodal).toBe(true)
     expect(parseUpstreamModel({
       id: 'b',
       maxInputTokens: 1,
       maxOutputTokens: 1,
       supportsImages: false,
-    })?.multimodal).toBeUndefined()
+    })?.supportsImages).toBe(false)
+    expect(parseUpstreamModel({
+      id: 'b',
+      maxInputTokens: 1,
+      maxOutputTokens: 1,
+      supportsImages: false,
+    })?.multimodal).toBe(false)
     expect(parseUpstreamModel({
       id: 'c',
       maxInputTokens: 1,
       maxOutputTokens: 1,
-      supportsImages: true,
-      disabledMultimodal: true,
-    })?.multimodal).toBeUndefined()
-    expect(parseUpstreamModel({
-      id: 'd',
-      maxInputTokens: 1,
-      maxOutputTokens: 1,
-    })?.multimodal).toBeUndefined()
+    })?.supportsImages).toBeUndefined()
   })
 
   it('rejects disabled models and models without token limits', () => {
