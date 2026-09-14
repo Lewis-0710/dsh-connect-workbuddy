@@ -11,6 +11,10 @@
  *   本实现改为扫描整个 auth 目录，按 uin 去重为多个可选账号。跟随 App
  *   当前登录（live 文件）仍是默认行为；用户显式选择的账号被严格绑定，
  *   不因积分多少而切换，失效时也不会静默改选其他账号。
+ *   另：store 可按区域（cn | global）限定可见账号 —— 国内版与国际版各持
+ *   一个 store，账号、刷新、选择完全隔离；插件自有刷新副本也按区域分
+ *   文件（`.workbuddy-auth.<region>.json`），双账号同时在线互不覆盖，
+ *   旧的单文件 `.workbuddy-auth.json` 作为迁移源保留读取。
  *
  * @module dsh-connect-workbuddy/auth
  */
@@ -21,7 +25,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import type { WorkBuddyRefreshOutcome } from './upstream.ts'
+import { regionOf, type WorkBuddyRefreshOutcome, type WorkBuddyRegion } from './upstream.ts'
 
 /** Normalized WorkBuddy credential, timestamps in epoch milliseconds. */
 export interface WorkBuddyCredential {
@@ -54,8 +58,22 @@ export interface WorkBuddyAuthStatus {
 export interface WorkBuddyStoreOptions {
   /** Explicit desktop auth-file path, overriding env and platform defaults. */
   desktopPath?: string
-  /** Explicit plugin-owned copy path, defaulting under `$DSH_HOME`. */
+  /**
+   * Explicit plugin-owned copy path, overriding the per-region default.
+   * Injectable so the copy/refresh cycle is testable without a real machine.
+   */
   ownPath?: string
+  /**
+   * Region this store serves. When set, only credentials whose login domain
+   * maps to this region are discovered, selected, or refreshed — the two
+   * regions' stores run side by side without seeing each other's accounts.
+   */
+  region?: WorkBuddyRegion
+  /**
+   * Legacy single-copy path read as a migration source; defaults to the
+   * pre-dual-provider location. Injectable for tests.
+   */
+  legacyOwnPath?: string
   /**
    * Auth directories to scan, overriding the platform defaults. Injectable so
    * the multi-account scan is testable without touching a real machine.
@@ -81,7 +99,7 @@ export interface WorkBuddyAccountChoice {
   selected: boolean
 }
 
-/** Basename of the plugin-owned credential copy inside the Harness home. */
+/** Legacy single-copy basename (pre-dual-provider); kept as migration source. */
 export const WORKBUDDY_AUTH_FILENAME = '.workbuddy-auth.json'
 
 /** Env variable that overrides the desktop auth-file location. */
@@ -89,6 +107,9 @@ export const WORKBUDDY_AUTH_FILE_ENV = 'WORKBUDDY_AUTH_FILE'
 
 /** Basename of the live WorkBuddy desktop auth file. */
 const WORKBUDDY_LIVE_FILENAME = 'workbuddy-desktop.info'
+
+/** Prefix of the plugin-owned per-region credential copies. */
+const WORKBUDDY_OWN_PREFIX = '.workbuddy-auth'
 
 /** Current on-disk format of the plugin-owned copy; readers reject others. */
 const OWN_FORMAT_VERSION = 1
@@ -99,8 +120,21 @@ interface OwnDocument {
   credential: WorkBuddyCredential
 }
 
-/** Plugin-owned copy path inside the Harness home. */
-export function workbuddyOwnAuthPath(): string {
+/**
+ * Plugin-owned copy path for one region inside the Harness home. Each
+ * region's store refreshes into its own file so two simultaneously signed-in
+ * regions never overwrite each other's refreshed token.
+ */
+export function workbuddyOwnAuthPath(region: WorkBuddyRegion): string {
+  return join(resolveDshHome(), `${WORKBUDDY_OWN_PREFIX}.${region}.json`)
+}
+
+/**
+ * Pre-dual-provider single-copy path. Still read as a migration source (a
+ * legacy credential serves the region it belongs to until that region's own
+ * first refresh writes the per-region file), and removed by `logout`.
+ */
+export function legacyWorkbuddyOwnAuthPath(): string {
   return join(resolveDshHome(), WORKBUDDY_AUTH_FILENAME)
 }
 
@@ -259,7 +293,7 @@ function ownDocument(credential: WorkBuddyCredential, accountId: string | undefi
 }
 
 /** Parse the plugin-owned copy; other versions and shapes are rejected. */
-function parseOwnDocument(text: string): WorkBuddyCredential | undefined {
+function parseOwnDocument(text: string, filePath: string): WorkBuddyCredential | undefined {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -270,7 +304,7 @@ function parseOwnDocument(text: string): WorkBuddyCredential | undefined {
   const document = parsed as Record<string, unknown>
   if (document['version'] !== OWN_FORMAT_VERSION) return undefined
   if (typeof document['credential'] !== 'object' || document['credential'] === null) return undefined
-  const credential = parseWorkBuddyAuth(JSON.stringify({ auth: document['credential'] }), workbuddyOwnAuthPath())
+  const credential = parseWorkBuddyAuth(JSON.stringify({ auth: document['credential'] }), filePath)
   if (credential === undefined) return undefined
   return { ...credential, source: 'dsh' }
 }
@@ -303,7 +337,10 @@ async function readAuthFile(path: string): Promise<WorkBuddyCredential | undefin
 export class WorkBuddyCredentialStore {
   private readonly refresh: WorkBuddyStoreOptions['refresh']
   private readonly refreshMarginMs: number
-  private readonly ownPath: string
+  private readonly region: WorkBuddyRegion | undefined
+  private readonly ownPathExplicit: string | undefined
+  private readonly legacyOwnPath: string
+  private readonly legacyOwnPathExplicit: string | undefined
   private readonly authDirs: readonly string[] | undefined
   private desktopPathOverride: string | undefined
   private accountId: string | undefined
@@ -312,9 +349,49 @@ export class WorkBuddyCredentialStore {
   constructor(options: WorkBuddyStoreOptions) {
     this.refresh = options.refresh
     this.refreshMarginMs = options.refreshMarginMs ?? 5 * 60 * 1000
-    this.ownPath = options.ownPath ?? workbuddyOwnAuthPath()
+    this.region = options.region
+    this.ownPathExplicit = options.ownPath
+    this.legacyOwnPath = options.legacyOwnPath ?? legacyWorkbuddyOwnAuthPath()
+    this.legacyOwnPathExplicit = options.legacyOwnPath
     this.authDirs = options.authDirs
     this.desktopPathOverride = options.desktopPath
+  }
+
+  /** Whether a credential's login domain belongs to this store's region. */
+  private matchesRegion(domain: string): boolean {
+    return this.region === undefined || regionOf(domain) === this.region
+  }
+
+  /**
+   * The path this store refreshes into: the per-region file for a
+   * region-scoped store, the legacy single file otherwise, or an explicitly
+   * injected path in tests.
+   */
+  ownAuthPath(): string {
+    if (this.ownPathExplicit !== undefined) return this.ownPathExplicit
+    return this.region !== undefined ? workbuddyOwnAuthPath(this.region) : this.legacyOwnPath
+  }
+
+  /**
+   * Every plugin-owned copy to read, most preferred first. A region-scoped
+   * store reads the legacy single copy as its migration source (readAll's
+   * region filter drops it when it carries the other region's credential); an
+   * unscoped store reads everything so diagnostics see both regions.
+   *
+   * With an explicitly injected own path the legacy source is read ONLY when
+   * it was injected too — a test that pins one file must not accidentally see
+   * the real machine's legacy copy.
+   */
+  private ownCandidates(): string[] {
+    if (this.ownPathExplicit !== undefined) {
+      return this.legacyOwnPathExplicit !== undefined
+        ? [this.ownPathExplicit, this.legacyOwnPathExplicit]
+        : [this.ownPathExplicit]
+    }
+    if (this.region !== undefined) {
+      return [workbuddyOwnAuthPath(this.region), this.legacyOwnPath]
+    }
+    return [this.legacyOwnPath, workbuddyOwnAuthPath('cn'), workbuddyOwnAuthPath('global')]
   }
 
   /** Repoint the desktop file or directory; applies on the next read. */
@@ -346,11 +423,6 @@ export class WorkBuddyCredentialStore {
   /** The resolved desktop auth-file path, for diagnostics. */
   desktopAuthPath(): string | undefined {
     return this.resolveDesktopCandidates()[0]
-  }
-
-  /** The plugin-owned copy path, for diagnostics. */
-  ownAuthPath(): string {
-    return this.ownPath
   }
 
   /**
@@ -407,13 +479,17 @@ export class WorkBuddyCredentialStore {
   /**
    * Read every local credential, deduplicated by account id. Files are
    * probed newest-first, so the first entry for an account is its freshest.
+   *
+   * A region-scoped store sees only its own region's credentials: the other
+   * region's accounts are invisible to selection, refresh, and status alike,
+   * which is what keeps the two regions' providers from cross-billing.
    */
   private async readAll(): Promise<WorkBuddyCredential[]> {
     const files = await this.candidateFiles()
     const byId = new Map<string, WorkBuddyCredential>()
     for (const file of files) {
       const credential = await readAuthFile(file)
-      if (credential === undefined) continue
+      if (credential === undefined || !this.matchesRegion(credential.domain)) continue
       const id = workbuddyAccountId(credential)
       const existing = byId.get(id)
       if (existing === undefined) {
@@ -427,8 +503,8 @@ export class WorkBuddyCredentialStore {
           && credential.expiresAtMs > existing.expiresAtMs)
       if (better) byId.set(id, credential)
     }
-    const own = await this.readOwn()
-    if (own !== undefined) {
+    for (const own of await this.readOwns()) {
+      if (!this.matchesRegion(own.domain)) continue
       const id = workbuddyAccountId(own)
       const existing = byId.get(id)
       // The refreshed copy wins only when it lives longer.
@@ -525,10 +601,18 @@ export class WorkBuddyCredentialStore {
     }
   }
 
-  /** Remove the plugin-owned copy; the desktop files are untouched. */
+  /**
+   * Remove every plugin-owned copy this store could read (per-region file,
+   * legacy single file, and their lock siblings); the desktop files are
+   * untouched. A region store's logout therefore also clears the legacy
+   * migration source — deliberate: `logout` is the user's "forget what the
+   * plugin stored" action, not a per-account toggle.
+   */
   async logout(): Promise<void> {
-    await rm(this.ownPath, { force: true })
-    await rm(`${this.ownPath}.lock`, { force: true })
+    for (const path of this.ownCandidates()) {
+      await rm(path, { force: true })
+      await rm(`${path}.lock`, { force: true })
+    }
   }
 
   private needsRefresh(credential: WorkBuddyCredential): boolean {
@@ -566,20 +650,30 @@ export class WorkBuddyCredentialStore {
 
   private async saveOwn(credential: WorkBuddyCredential): Promise<void> {
     const accountId = workbuddyAccountId(credential)
-    await withFileLock(this.ownPath, async () => {
-      await writeFileAtomic(this.ownPath, `${JSON.stringify(ownDocument(credential, accountId), null, 2)}\n`, {
+    const path = this.ownAuthPath()
+    await withFileLock(path, async () => {
+      await writeFileAtomic(path, `${JSON.stringify(ownDocument(credential, accountId), null, 2)}\n`, {
         mode: 0o600,
         dirMode: 0o700,
       })
     })
   }
 
-  private async readOwn(): Promise<WorkBuddyCredential | undefined> {
-    try {
-      return parseOwnDocument(await readFile(this.ownPath, 'utf8'))
-    } catch {
-      return undefined
+  /**
+   * Every readable plugin-owned copy, in candidate order; absent or corrupt
+   * files are skipped rather than propagated.
+   */
+  private async readOwns(): Promise<WorkBuddyCredential[]> {
+    const copies: WorkBuddyCredential[] = []
+    for (const path of this.ownCandidates()) {
+      try {
+        const parsed = parseOwnDocument(await readFile(path, 'utf8'), path)
+        if (parsed !== undefined) copies.push(parsed)
+      } catch {
+        // absent or unreadable — the next candidate is tried
+      }
     }
+    return copies
   }
 
   /** Whether any candidate file exists as a regular file; diagnostics only. */

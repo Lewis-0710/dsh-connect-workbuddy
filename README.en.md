@@ -17,32 +17,36 @@
 
 [English](README.en.md) | 中文
 
-A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle plugin that connects locally signed-in WorkBuddy models to the DSH model picker — **both the CN app and the international WorkBuddy AI app are supported** — with a read-only credits overview and selectable model management.
+A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bundle plugin that connects locally signed-in WorkBuddy models to the DSH model picker — **both the CN app and the international WorkBuddy AI app are supported** — with a read-only credits overview and selectable model management. **The CN and international sides are two parallel providers (`workbuddy` / `workbuddy-global`) that can be used at the same time**; the settings card separates them with tabs for convenient management.
 
 ## Features
 
-- **WorkBuddy model provider (CN + international)** — registers locally signed-in WorkBuddy models as the `workbuddy` provider: CN accounts expose `GLM-5.3`, `DeepSeek-V4-Pro`, `Kimi-K3`, `MiniMax-M3`, `Hy3`, etc., while international accounts expose `GPT-5.6`, `Gemini-3.5-Flash`, `GLM-5.3`, `Kimi-K3`, etc.; model names carry the upstream credit multiplier (e.g. `GLM-5.3 · x0.79`), matching WorkBuddy's own model menu. **Region routing is fully automatic — no toggle anywhere**: whichever account you select is the region you use.
+- **Dual parallel providers (CN + international)** — the CN side registers as the `workbuddy` provider (`GLM-5.3`, `DeepSeek-V4-Pro`, `Kimi-K3`, `MiniMax-M3`, `Hy3`, etc.), the international side as `workbuddy-global` (`GPT-5.6`, `Gemini-3.5-Flash`, `GLM-5.3`, `Kimi-K3`, etc.), and **both rosters appear in the DSH model picker simultaneously**: different sessions can each pick a side without interfering. Model names carry the upstream credit multiplier (e.g. `GLM-5.3 · x0.79`), matching WorkBuddy's own model menu.
+- **Tabbed settings card** — the card's top carries a "Domestic / Global" tab bar; each tab holds its own account picker, credits overview, and model management. Account, directory, selection, and unsaved drafts are fully isolated per tab — switching accounts or refreshing models on one tab never touches the other side's runtime catalog or sessions.
 - **Model management** — refresh the full catalog from upstream and enable or disable each model individually; refresh is a draft operation that only takes effect on save. Upstream also reports credit multiplier, context/output limits, and reasoning efforts; image input is opted in per model manually (off by default).
-- **Local account switching** — discovers the multiple sign-in credentials WorkBuddy's desktop app leaves behind and lets you switch between them. Tokens are never written to DSH settings.
+- **Local account switching** — discovers the multiple sign-in credentials WorkBuddy's desktop app leaves behind and lets you switch per region. Tokens are never written to DSH settings.
 - **Read-only credits overview** — remaining credit aggregated per package, plus each model's credit multiplier. Queries consume no credits.
 - **Multi-candidate credential paths** — probes the platform defaults for macOS / Windows / Linux in turn, overridable by environment variable or directly in the card.
-- **Secure loopback shim** — random port + in-process random secret; the real WorkBuddy token is never handed to pi-ai.
-- **Command-line diagnostics** — `status` / `doctor` / `logout`, so sign-in, credits, and host health can be checked without a browser.
+- **Secure loopback shim** — one random port + in-process random secret per region; the real WorkBuddy token is never handed to pi-ai.
+- **Command-line diagnostics** — `status` / `doctor` / `logout`, reporting sign-in and credits per region, without a browser.
 
 ## How it works
 
 ```text
-DSH PiAiAdapter
-  -> secure loopback shim (random port + in-process random secret)
+DSH PiAiAdapter (one stack per provider)
+  -> secure loopback shim (one random port + in-process random secret per region)
   -> WorkBuddyUpstreamClient
-  -> https://copilot.tencent.com/v2/chat/completions
+  -> CN: https://copilot.tencent.com/v2/chat/completions
+  -> Global: https://www.workbuddy.ai/v2/chat/completions
   -> WorkBuddy SSE
   -> DSH executes local tools and returns their results
 ```
 
-The model catalog comes from each region's correct source: CN reads `/v2/enterprises/personal/models`, while international reads `www.workbuddy.ai/v3/config` — the config service serves a different roster per client channel, and only the desktop user agent yields the account's real 20-model list (including the free `deepseek-v4.1-flash`). The credits overview comes from `https://www.codebuddy.cn/v2/billing/meter/get-user-resource` (international accounts auto-route to `https://www.workbuddy.ai`); all are read-only. No manual region toggle: routing follows the `domain` field inside the credential file (`workbuddy.ai` → international, anything else → CN), and **each region keeps its own directory and selection**, so switching accounts never overwrites the other region's picks.
+The CN and international sides each own a complete runtime stack — credential store, model catalog, loopback shim, adapter — with visibility filtered by credential domain (`workbuddy.ai` → international, anything else → CN), so **both regions' accounts can be signed in and used by different sessions at the same time**.
 
-Credentials are read (read-only) from the WorkBuddy desktop app's own auth file. Refreshed tokens are kept separately in `$DSH_HOME/.workbuddy-auth.json`; the desktop app's file is never written.
+The model catalog comes from each region's correct source: CN reads `/v2/enterprises/personal/models`, while international reads `www.workbuddy.ai/v3/config` — the config service serves a different roster per client channel, and only the desktop user agent yields the account's real 20-model list (including the free `deepseek-v4.1-flash`). The credits overview comes from `https://www.codebuddy.cn/v2/billing/meter/get-user-resource` (international accounts auto-route to `https://www.workbuddy.ai`); all are read-only.
+
+Credentials are read (read-only) from the WorkBuddy desktop app's own auth file. Refreshed tokens are kept per region in `$DSH_HOME/.workbuddy-auth.cn.json` and `$DSH_HOME/.workbuddy-auth.global.json` (two simultaneously signed-in accounts never overwrite each other; the legacy single file `.workbuddy-auth.json` is still read as a migration source); the desktop app's file is never written.
 
 ## Install
 

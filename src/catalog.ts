@@ -116,7 +116,16 @@ export function deriveCatalog(
 
 /** Mutable catalog shared by the shim's `/v1/models` and the adapter. */
 export class WorkBuddyCatalog {
-  private models: readonly WorkBuddyModelInfo[] = FALLBACK_WORKBUDDY_MODELS
+  private models: readonly WorkBuddyModelInfo[]
+
+  /**
+   * @param region Seeds the static fallback for this region; each region's
+   * provider must never serve the other region's roster before its first
+   * live refresh lands.
+   */
+  constructor(region: 'cn' | 'global' = 'cn') {
+    this.models = fallbackModelsFor(region)
+  }
 
   /** Current entries; the fallback list until the upstream answer lands. */
   current(): readonly WorkBuddyModelInfo[] {

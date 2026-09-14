@@ -7,7 +7,8 @@
  *     dingminhua/dsh-subagent-default-model（MIT）的 SETTINGS_CSS。
  *     沿用目的是让两个插件共享同一套外部表现语言。
  * 改动：类名由 `dsm-trae-*` 改为 `dsm-workbuddy-*`；
- *   移除 trae 特有的 1M 变体样式，新增按套餐聚合的积分行样式。
+ *   移除 trae 特有的 1M 变体样式，新增按套餐聚合的积分行样式；
+ *   双 provider 化后新增国内版/国际版 tab 栏样式。
  *
  * @module dsh-connect-workbuddy/client/styles
  */
@@ -33,6 +34,12 @@ export const WORKBUDDY_CARD_CSS = `
 .dsm-btn-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
 .dsm-btn-primary:hover:not(:disabled){opacity:.9}
 .dsm-workbuddy-usage{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px}
+.dsm-workbuddy-tabs{display:flex;gap:6px;padding:4px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
+.dsm-workbuddy-tab{appearance:none;font:inherit;cursor:pointer;flex:1;border:0;border-radius:7px;padding:7px 10px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:500;line-height:18px;background:transparent;transition:color .15s,background .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsm-workbuddy-tab:hover:not(:disabled):not(.dsm-workbuddy-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-workbuddy-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+.dsm-workbuddy-tab-active{color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-2,#232529);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l2,#3a3d45)}
+.dsm-workbuddy-tab-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:baseline}
 .dsm-workbuddy-usage-account{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-workbuddy-usage-account-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
 .dsm-workbuddy-usage-expiry{padding-left:19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}

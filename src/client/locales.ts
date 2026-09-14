@@ -12,9 +12,12 @@
 
 export const en = {
   'row.title': 'WorkBuddy credits & models (dsh-connect-workbuddy)',
-  'row.desc': 'Use the models in the WorkBuddy desktop app directly in DSH, and see your remaining credits at a glance.',
+  'row.desc': 'Use WorkBuddy models in DSH and see your remaining credits; the domestic and international sides are two independent providers, each with its own account — use both at the same time.',
   'row.expand': 'Expand',
   'row.collapse': 'Collapse',
+  'row.tabCn': 'Domestic',
+  'row.tabGlobal': 'Global',
+  'row.tabHint': 'Each tab is a separate provider (workbuddy / workbuddy-global) with its own account, credits, and models. Both sides are live at once: different sessions can pick from either side, and changes on one tab never touch the other.',
   'row.signedOut': 'Not signed in',
   'row.signedOutHint': 'Sign in once in the WorkBuddy desktop app; this plugin follows that sign-in automatically.',
   'row.signedIn': 'Signed in: {accountName}',
@@ -60,9 +63,12 @@ export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.title': '接入使用 WorkBuddy 积分与模型（dsh-connect-workbuddy）',
-  'row.desc': '在 DSH 中直接使用 WorkBuddy 桌面 App 包含的模型，并随时查看剩余积分。',
+  'row.desc': '在 DSH 中使用 WorkBuddy 模型并随时查看剩余积分；国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。',
   'row.expand': '展开',
   'row.collapse': '收起',
+  'row.tabCn': '国内版',
+  'row.tabGlobal': '国际版',
+  'row.tabHint': '每个 tab 是一个独立供应商（workbuddy / workbuddy-global），各有自己的账号、积分与模型。两边同时生效：不同会话可各选一边，一侧的改动不影响另一侧。',
   'row.signedOut': '未登录',
   'row.signedOutHint': '在 WorkBuddy 桌面 App 里登录一次即可，插件会自动跟随当前登录的账号。',
   'row.signedIn': '已登录：{accountName}',
