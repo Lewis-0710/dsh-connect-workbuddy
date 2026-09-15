@@ -243,13 +243,13 @@ export function apply(ctx: Context, config: Config): void {
       ),
       new Set(state.imageModelIds ?? []),
     )
-  // What the card displays: the last-refreshed directory, so the user re-reads
-  let discoveredCatalog: readonly WorkBuddyModelInfo[] | undefined
-
-  // What the card displays: the last-refreshed directory, or the discovered
-  // upstream catalog, falling back to the static catalog.
-  const displayModels = (value: Config): readonly WorkBuddyModelInfo[] =>
-    value.lastCatalog?.length ? value.lastCatalog : (discoveredCatalog ?? FALLBACK_WORKBUDDY_MODELS)
+  }
+  // What the card displays: this region's last-refreshed directory, so the user
+  // re-reads the current catalog rather than a stale saved snapshot.
+  const displayModels = (value: Config, region: WorkBuddyRegion): readonly WorkBuddyModelInfo[] => {
+    const state = regionStateOf(value, region)
+    return state.lastCatalog?.length ? state.lastCatalog : fallbackModelsFor(region)
+  }
 
   let current = () => config
   let invalidateCatalog = (): void => {}
@@ -271,9 +271,8 @@ export function apply(ctx: Context, config: Config): void {
   }
   const discoverModels = async (signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]> => {
     const credential = await store.resolve()
-    const fetched = await client.fetchModels(credential, signal)
-    discoveredCatalog = fetched
-    return fetched
+    currentRegion = regionOf(credential.domain)
+    return client.fetchModels(credential, signal)
   }
 
   const saveSettings = async (payload: import('./web-status.ts').WorkBuddySettingsPayload): Promise<void> => {
@@ -285,7 +284,7 @@ export function apply(ctx: Context, config: Config): void {
       ...payload.imageModelIds !== undefined ? { imageModelIds: [...payload.imageModelIds] } : {},
       ...payload.contextBudgets !== undefined ? { contextBudgets: { ...payload.contextBudgets } } : {},
     }
-    catalog.set(configuredModels(next))
+    catalog.set(configuredModels(next, currentRegion))
     invalidateCatalog()
     await ctx.settings.update(WORKBUDDY_SETTINGS_NS, payload)
   }
@@ -417,7 +416,7 @@ export function apply(ctx: Context, config: Config): void {
           currentRegion = regionOf(credential.domain)
           const models = await client.fetchModels(credential)
           if (stopped) return
-          discoveredCatalog = models
+          const state = regionStateOf(current(), currentRegion)
           catalog.set(withImageSelection(
             deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
             new Set(state.imageModelIds ?? []),
