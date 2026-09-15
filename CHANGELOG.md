@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.1 (2026-09-15)
+
+### Fixes
+
+- **修复 `codebuddy.ai` 国际账号被判为国内、上游返回 HTML 401（issue #4）**。国际版产品有两个品牌域名：WorkBuddy AI **桌面端**在 `workbuddy.ai` 登录，而 **CodeBuddy CLI** 把同一个国际账号登录在 `codebuddy.ai`。`regionOf()` 此前只认 `workbuddy.ai`，于是 CLI 登录的 `www.codebuddy.ai` 凭据被判为 `cn`，其 token 被发往国内网关（`copilot.tencent.com` / `www.codebuddy.cn`），在 openresty 层被直接拒绝，返回 **HTML** 401 而非业务 JSON —— 表现为积分、签到、模型列表与对话**全部失败**（报告者最初描述为「仅积分失败」，后经其本人确认实际是全挂，与该根因一致）。
+  - **`regionOf()` 增补第二个国际品牌域名**：`codebuddy.ai` / `*.codebuddy.ai` → `global`。判定仍按凭据自带的 `domain` 字段，无需任何手动开关。
+  - **新增 `globalBase(credential)`：国际版网关跟随凭据自身的 `domain`**，不再写死 `www.workbuddy.ai`。两个品牌域名的凭据**互不通用**（在 `codebuddy.ai` 签发的 token 会被 `workbuddy.ai` 网关拒绝，反之亦然），因此 base 必须跟随凭据。`chatBase` / `billingBase` / `originReferer` / `fetchModels` 四处全部改用 `globalBase(credential)`；未识别的国际域名回落至 `www.workbuddy.ai`。
+  - **token 刷新同样受益**：刷新端点走 `chatBase(credential)`，此前 `codebuddy.ai` 账号会向国内网关刷新；现在跟随凭据域名。
+  - 国内版（`codebuddy.cn` / `workbuddy.cn` / `copilot.tencent.com`）行为完全不变。
+
+  > 实测依据（只读探测，未使用任何凭据）：`www.workbuddy.ai` 与 `www.codebuddy.ai` 对 `/v3/config` 均返回 **200 + 同一 JSON envelope**，对 `/v2/billing/meter/get-user-resource` 均返回 **401 + 同形 HTML**（未带 token），确认两者是同一套网关栈的不同品牌域名，路径形态一致。
+
+### Docs
+
+- `scripts/probe-global-billing-401.mjs` 同步：`regionOf` / `globalBase` 与发布版保持一致；「凭据中是否出现 codebuddy.ai」的判定改为**中性陈述**——该脚本扫的是桌面端凭据目录，而 `codebuddy.ai` 来自 CLI 登录，扫不到只能说明本机没有 CLI 登录，不构成「该域名不存在」的结论（此前正是这个措辞导致了 issue #4 中的误判）。
+
+### Tests
+
+- `upstream.spec.ts` 新增 3 例：`codebuddy.ai` / `*.codebuddy.ai` / 大小写与空白归一化判为 `global`，且 `www.codebuddy.cn`、`notcodebuddy.ai` 不被宽松后缀匹配误升为国际；`globalBase` 跟随凭据域名并正确回落；`fetchModels` 对 `www.codebuddy.ai` 凭据请求 **`https://www.codebuddy.ai/v3/config`**（回归锚点，验证不再误发国内网关）。
+
 ## 2.0.0 (2026-09-15)
 
 ### Breaking Changes

@@ -8,6 +8,7 @@ import {
   parseUpstreamModel,
   prepareChatBody,
   regionOf,
+  globalBase,
 } from '../src/upstream.ts'
 
 describe('prepareChatBody', () => {
@@ -69,6 +70,33 @@ describe('regionOf', () => {
     expect(regionOf('www.workbuddy.cn')).toBe('cn')
     expect(regionOf('')).toBe('cn')
   })
+
+  it('classifies the codebuddy.ai brand domain as global', () => {
+    // The CodeBuddy CLI signs the international account in at codebuddy.ai,
+    // a second brand domain for the same product (issue #4). Classifying it as
+    // cn sent its token to the CN gateway, which answered an openresty HTML 401.
+    expect(regionOf('www.codebuddy.ai')).toBe('global')
+    expect(regionOf('codebuddy.ai')).toBe('global')
+    expect(regionOf('app.codebuddy.ai')).toBe('global')
+    // Case and surrounding whitespace are normalized the same way.
+    expect(regionOf('  WWW.CodeBuddy.AI  ')).toBe('global')
+    // The CN brand domain must NOT be promoted by a loose suffix match.
+    expect(regionOf('www.codebuddy.cn')).toBe('cn')
+    expect(regionOf('notcodebuddy.ai')).toBe('cn')
+  })
+})
+
+describe('globalBase', () => {
+  it('follows the credential OWN brand domain', () => {
+    // A token issued at codebuddy.ai is rejected by the workbuddy.ai gateway,
+    // so the base has to track the credential rather than a fixed host.
+    expect(globalBase('www.codebuddy.ai')).toBe('https://www.codebuddy.ai')
+    expect(globalBase('codebuddy.ai')).toBe('https://www.codebuddy.ai')
+    expect(globalBase('www.workbuddy.ai')).toBe('https://www.workbuddy.ai')
+    // Unknown global spellings fall back to the desktop app's gateway.
+    expect(globalBase('')).toBe('https://www.workbuddy.ai')
+    expect(globalBase('some.other.ai')).toBe('https://www.workbuddy.ai')
+  })
 })
 
 describe('WorkBuddyUpstreamClient.fetchModels', () => {
@@ -127,6 +155,15 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
       .toBe('https://copilot.tencent.com/v2/enterprises/personal/models')
     expect(await fetchModelsUrl('www.workbuddy.ai'))
       .toBe('https://www.workbuddy.ai/v3/config')
+  })
+
+  it('routes a codebuddy.ai credential to its own gateway, not the CN one', async () => {
+    // Regression for issue #4: www.codebuddy.ai was classified as cn, so the
+    // request went to copilot.tencent.com and came back an openresty HTML 401.
+    expect(await fetchModelsUrl('www.codebuddy.ai'))
+      .toBe('https://www.codebuddy.ai/v3/config')
+    expect(await fetchModelsUrl('codebuddy.ai'))
+      .toBe('https://www.codebuddy.ai/v3/config')
   })
 
   it('sends the desktop user agent on the global config request', async () => {
