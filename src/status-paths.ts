@@ -23,6 +23,32 @@ export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
 /** Plugin-owned settings save endpoint. */
 export const WORKBUDDY_SETTINGS_SAVE_PATH = '/plugins/dsh-connect-workbuddy/settings/save'
 
+/** Query parameter naming the region a card request addresses. */
+export const WORKBUDDY_REGION_PARAM = 'region'
+
+/** Every region, in card tab order. */
+export const WORKBUDDY_REGIONS: readonly WorkBuddyWebRegion[] = ['cn', 'global']
+
+/**
+ * Address one region's status route. The two regions are separate provider
+ * stacks; every card request carries the region whose tab the user is on.
+ */
+export function withWorkBuddyRegion(path: string, region: WorkBuddyWebRegion): string {
+  return `${path}?${WORKBUDDY_REGION_PARAM}=${region}`
+}
+
+/**
+ * Read the region parameter off a status-route URL. Absent means the domestic
+ * tab (`cn`); a present-but-unknown value returns undefined so the route can
+ * answer 400 instead of guessing.
+ */
+export function regionOfStatusUrl(url: string): WorkBuddyWebRegion | undefined {
+  const at = url.indexOf('?')
+  const value = at === -1 ? null : new URLSearchParams(url.slice(at + 1)).get(WORKBUDDY_REGION_PARAM)
+  if (value === null || value === '') return 'cn'
+  return (WORKBUDDY_REGIONS as readonly string[]).includes(value) ? value as WorkBuddyWebRegion : undefined
+}
+
 /** One credit package as the upstream returns it, node-free. */
 export interface WorkBuddyWebCreditPackage {
   packageName: string

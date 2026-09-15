@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { workBuddyWebStatus } from '../src/web-status.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
-import { WORKBUDDY_CHECKIN_PATH } from '../src/status-paths.ts'
+import { WORKBUDDY_CHECKIN_PATH, WORKBUDDY_USAGE_PATH } from '../src/status-paths.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 
@@ -41,14 +41,22 @@ const ACCOUNTS = [
   },
 ]
 
+/** The store mock the region dispatch hands out. */
+function baseStore(): {
+  accounts: () => Promise<typeof ACCOUNTS>
+  status: () => Promise<{ state: 'signed-in'; expiresAtMs: number }>
+  resolve: () => Promise<WorkBuddyCredential>
+} {
+  return {
+    accounts: async () => ACCOUNTS,
+    status: async () => ({ state: 'signed-in', expiresAtMs: CREDENTIAL.expiresAtMs }),
+    resolve: async () => CREDENTIAL,
+  }
+}
+
 function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddyStatusRouteOptions {
   return {
-    store: {
-      accounts: async () => ACCOUNTS,
-      status: async () => ({ state: 'signed-in', expiresAtMs: CREDENTIAL.expiresAtMs }),
-      resolve: async () => CREDENTIAL,
-      accountsFail: false,
-    } as never,
+    store: () => baseStore() as never,
     client: {
       fetchCredits: async () => ({
         total: 1875,
@@ -83,12 +91,12 @@ function deps(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): WorkBuddySt
 describe('workBuddyWebStatus', () => {
   it('reports signed-out with accounts when no credential resolves', async () => {
     const status = await workBuddyWebStatus(deps({
-      store: {
+      store: () => ({
         accounts: async () => ACCOUNTS,
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('workbuddy: no signed-in account') },
-      } as never,
-    }))
+      }) as never,
+    }), 'cn')
     expect(status.status).toBe('signed-out')
     if (status.status !== 'signed-out') return
     expect(status.accounts).toHaveLength(2)
@@ -96,19 +104,19 @@ describe('workBuddyWebStatus', () => {
 
   it('reports signed-out with an empty list when no credential file exists at all', async () => {
     const status = await workBuddyWebStatus(deps({
-      store: {
+      store: () => ({
         accounts: async () => [],
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('no account') },
-      } as never,
-    }))
+      }) as never,
+    }), 'cn')
     expect(status.status).toBe('signed-out')
     if (status.status !== 'signed-out') return
     expect(status.accounts).toEqual([])
   })
 
   it('never puts token material in the signed-in document', async () => {
-    const status = await workBuddyWebStatus(deps())
+    const status = await workBuddyWebStatus(deps(), 'cn')
     expect(status.status).toBe('signed-in')
     const serialized = JSON.stringify(status)
     // Field names are the contract; leak detection is about token-shaped values.
@@ -118,7 +126,7 @@ describe('workBuddyWebStatus', () => {
   })
 
   it('carries accounts, models, selection, and credits', async () => {
-    const status = await workBuddyWebStatus(deps())
+    const status = await workBuddyWebStatus(deps(), 'cn')
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
     expect(status.accountName).toBe('Alpha')
     expect(status.accounts).toHaveLength(2)
@@ -146,7 +154,7 @@ describe('workBuddyWebStatus', () => {
         fetchCheckinStatus: async () => ({ active: true, todayCheckedIn: false, streakDays: 0, dailyCredit: 100, todayCredit: 0, isStreakDay: false, nextStreakDay: 0, streakBonusDays: 0, streakBonusCredit: 0 }),
         claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
       },
-    }))
+    }), 'cn')
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
     expect(status.credits).toBeUndefined()
     expect(status.creditsError).toBe('billing unavailable')
@@ -163,7 +171,7 @@ describe('workBuddyWebStatus', () => {
         fetchCheckinStatus: async () => ({ active: true, todayCheckedIn: false, streakDays: 0, dailyCredit: 100, todayCredit: 0, isStreakDay: false, nextStreakDay: 0, streakBonusDays: 0, streakBonusCredit: 0 }),
         claimDailyCheckin: async () => ({ credit: 100, streakDays: 1, isStreakDay: false }),
       },
-    }))
+    }), 'cn')
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
     expect(status.creditsError).toContain('[redacted token]')
     expect(status.creditsError).toContain('[redacted]')
@@ -172,23 +180,17 @@ describe('workBuddyWebStatus', () => {
 })
 
 describe('workBuddyWebStatus region routing', () => {
-  it('reports the signed-in credential region and reads that region\'s model slot', async () => {
+  it('reads the requested region\'s model slot and echoes the region', async () => {
     const seen: string[] = []
     const status = await workBuddyWebStatus(deps({
-      store: {
-        accounts: async () => ACCOUNTS,
-        status: async () => ({ state: 'signed-in' }),
-        resolve: async () => ({ ...CREDENTIAL, domain: 'www.workbuddy.ai' }),
-      } as never,
       displayModels: region => { seen.push(`models:${region}`); return FALLBACK_WORKBUDDY_MODELS },
       enabledModelIds: region => { seen.push(`enabled:${region}`); return ['hy3'] },
       imageModelIds: region => { seen.push(`image:${region}`); return [] },
       contextBudgets: region => { seen.push(`budgets:${region}`); return {} },
-    }))
+    }), 'global')
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
-    // The card writes its save into this region's slot, so it must match the
-    // credential — a stale CN region here is what silently dropped the
-    // international account's selected models.
+    // The document's region is the requested one — the card writes its save
+    // into that region's slot, so it must match the tab the user is on.
     expect(status.region).toBe('global')
     expect(new Set(seen)).toEqual(new Set([
       'models:global',
@@ -198,10 +200,23 @@ describe('workBuddyWebStatus region routing', () => {
     ]))
   })
 
-  it('keeps the CN region for a codebuddy.cn credential', async () => {
-    const status = await workBuddyWebStatus(deps())
+  it('answers the cn region for the domestic tab', async () => {
+    const status = await workBuddyWebStatus(deps(), 'cn')
     if (status.status !== 'signed-in') throw new Error('expected signed-in')
     expect(status.region).toBe('cn')
+  })
+
+  it('hands the requested region to the region-scoped store', async () => {
+    const seenRegions: string[] = []
+    const status = await workBuddyWebStatus(deps({
+      store: region => {
+        seenRegions.push(region)
+        return baseStore() as never
+      },
+    }), 'global')
+    if (status.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(seenRegions).toEqual(['global'])
+    expect(status.region).toBe('global')
   })
 })
 
@@ -241,10 +256,10 @@ describe('registerWorkBuddyStatusRoute', () => {
     handler: (req: unknown, res: unknown) => Promise<void> | void
   }
 
-  /** Mount the status routes against a fake webServer; return the check-in handler. */
-  async function mountCheckinHandler(
+  /** Mount the status routes against a fake webServer; return the captures. */
+  async function mountRoutes(
     options: Partial<WorkBuddyStatusRouteOptions> = {},
-  ): Promise<CapturedEntry['handler']> {
+  ): Promise<CapturedEntry[]> {
     const captured: CapturedEntry[] = []
     const FakeWebServer = {
       name: 'webServer',
@@ -263,14 +278,71 @@ describe('registerWorkBuddyStatusRoute', () => {
     const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
     registerWorkBuddyStatusRoute(ctx, deps(options))
     await ctx.fiber.dispose()
+    return captured
+  }
+
+  it('mounts the usage, account, check-in, and model routes', async () => {
+    const captured = await mountRoutes()
+    expect(captured.map(entry => entry.path)).toEqual([
+      '/plugins/dsh-connect-workbuddy/usage',
+      '/plugins/dsh-connect-workbuddy/accounts/refresh',
+      '/plugins/dsh-connect-workbuddy/checkin',
+      '/plugins/dsh-connect-workbuddy/models/refresh',
+    ])
+  })
+
+  it('routes the region query to that region\'s store, defaulting to cn', async () => {
+    const seenRegions: string[] = []
+    const captured = await mountRoutes({
+      store: region => {
+        seenRegions.push(region)
+        return baseStore() as never
+      },
+    })
+    const usage = captured.find(entry => entry.path === WORKBUDDY_USAGE_PATH)
+    if (usage === undefined) throw new Error('usage route was not registered')
+    const first = response()
+    await usage.handler(request('GET', undefined, `${WORKBUDDY_USAGE_PATH}?region=global`), first.res)
+    expect(first.status()).toBe(200)
+    expect(first.body()).toMatchObject({ status: 'signed-in', region: 'global' })
+    expect(seenRegions.slice()).toEqual(['global'])
+    const second = response()
+    await usage.handler(request('GET', undefined, WORKBUDDY_USAGE_PATH), second.res)
+    expect(second.status()).toBe(200)
+    expect(second.body()).toMatchObject({ region: 'cn' })
+    expect(seenRegions).toEqual(['global', 'cn'])
+  })
+
+  it('refuses an unknown region with 400 before touching the store', async () => {
+    const seenRegions: string[] = []
+    const captured = await mountRoutes({
+      store: region => {
+        seenRegions.push(region)
+        return baseStore() as never
+      },
+    })
+    const usage = captured.find(entry => entry.path === WORKBUDDY_USAGE_PATH)
+    if (usage === undefined) throw new Error('usage route was not registered')
+    const { res, status, body } = response()
+    await usage.handler(request('GET', undefined, `${WORKBUDDY_USAGE_PATH}?region=eu`), res)
+    expect(status()).toBe(400)
+    expect(body()).toMatchObject({ error: 'unknown region' })
+    expect(seenRegions).toEqual([])
+  })
+
+  /** Mount the status routes against a fake webServer; return the check-in handler. */
+  async function mountCheckinHandler(
+    options: Partial<WorkBuddyStatusRouteOptions> = {},
+  ): Promise<CapturedEntry['handler']> {
+    const captured = await mountRoutes(options)
     const checkin = captured.find(entry => entry.path === WORKBUDDY_CHECKIN_PATH)
     if (checkin === undefined) throw new Error('check-in route was not registered')
     return checkin.handler
   }
 
-  /** Minimal POST request; an absent Origin header reads as loopback. */
-  function request(method = 'POST', origin?: string): { method: string; headers: { origin?: string } } {
-    return { method, headers: origin === undefined ? {} : { origin } }
+  /** Minimal request; an absent Origin header reads as loopback. */
+  function request(method = 'POST', origin?: string, url?: string): { method: string; url: string; headers: { origin?: string } } {
+    return { method, url: url ?? '/', headers: origin === undefined ? {} : { origin } }
   }
 
   /** Response recorder: json() only needs writeHead + end. */
@@ -355,7 +427,7 @@ describe('registerWorkBuddyStatusRoute', () => {
       },
     })
     const { res, status, body } = response()
-    await handler(request(), res)
+    await handler(request('POST', undefined, `${WORKBUDDY_CHECKIN_PATH}?region=global`), res)
     expect(status()).toBe(200)
     expect(claims).toHaveLength(1)
     expect(reads).toHaveLength(2)

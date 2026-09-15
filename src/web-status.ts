@@ -11,7 +11,9 @@
  *   单条 status 路由的原始形态来自
  *     corrinehu/dsh-workbuddy-connect（MIT）。
  * 改动：由 1 条路由扩展为 3 条（新增模型刷新与账号重扫），
- *   并加入多账号字段与按套餐聚合的积分文档。
+ *   并加入多账号字段与按套餐聚合的积分文档；
+ *   双 provider 化后每条路由再按 `?region=cn|global` 参数化，
+ *   国内版与国际版两套 store 各自应答自己区域的请求。
  *
  * @module dsh-connect-workbuddy/web-status
  */
@@ -22,7 +24,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyCredits, WorkBuddyUpstreamClient } from './upstream.ts'
-import { regionOf } from './upstream.ts'
+import { regionOfStatusUrl } from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
@@ -51,20 +53,21 @@ export interface WorkBuddySettingsPayload {
 
 /** Constructor dependencies. */
 export interface WorkBuddyStatusRouteOptions {
-  store: WorkBuddyCredentialStore
+  /** The region-scoped credential store backing each region's requests. */
+  store(region: WorkBuddyRegion): WorkBuddyCredentialStore
   client: Pick<WorkBuddyUpstreamClient, 'fetchCredits' | 'fetchCheckinStatus' | 'claimDailyCheckin'>
   /**
-   * The selected region's last-refreshed model directory (unfiltered) for card
-   * display. Region-scoped because the CN and international apps expose
+   * The requested region's last-refreshed model directory (unfiltered) for
+   * card display. Region-scoped because the CN and international apps expose
    * different rosters; showing one region's directory on the other account is
    * the bug this parameter exists to prevent.
    */
   displayModels(region: WorkBuddyRegion): readonly WorkBuddyModelInfo[]
-  /** The selected region's selection, stored as model ids. */
+  /** The requested region's selection, stored as model ids. */
   enabledModelIds(region: WorkBuddyRegion): readonly string[]
-  /** Model ids the user opted into image input, for the selected region. */
+  /** Model ids the user opted into image input, for the requested region. */
   imageModelIds(region: WorkBuddyRegion): readonly string[]
-  /** Saved local DSH context budgets by model id, for the selected region. */
+  /** Saved local DSH context budgets by model id, for the requested region. */
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
   /** Re-read the live catalog from the upstream. */
   discoverModels?(signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
@@ -188,21 +191,25 @@ function toWebAccount(account: {
 }
 
 /**
- * Assemble the card's usage document. Sign-in state is read-only; credit is a
- * live billing answer whose failure degrades to `creditsError` rather than
- * failing the whole document.
+ * Assemble one region's card document. `region` is the tab the card is on;
+ * the region-scoped store already answers with only that region's accounts,
+ * so the document's model slots and account list are that region's by
+ * construction. Sign-in state is read-only; credit is a live billing answer
+ * whose failure degrades to `creditsError` rather than failing the document.
  */
 export async function workBuddyWebStatus(
   deps: WorkBuddyStatusRouteOptions,
+  region: WorkBuddyRegion,
 ): Promise<WorkBuddyWebUsage> {
-  const accounts = await deps.store.accounts()
-  const authStatus = await deps.store.status()
+  const store = deps.store(region)
+  const accounts = await store.accounts()
+  const authStatus = await store.status()
   if (authStatus.state !== 'signed-out' && accounts.length === 0) {
     return { status: 'signed-out', accounts: [] }
   }
   let credential
   try {
-    credential = await deps.store.resolve()
+    credential = await store.resolve()
   } catch (error: unknown) {
     // Account selection must remain available even when the selected token is
     // expired or its refresh request fails. Report that as account-level
@@ -212,9 +219,6 @@ export async function workBuddyWebStatus(
   // Only user-facing identity and expiry cross to the browser. Token material
   // and stable user IDs stay on the Host.
   const selected = accounts.find(account => account.selected)
-  // Region drives which per-region model directory and selection this document
-  // reports, and which slot the card writes back into.
-  const region = regionOf(credential.domain)
   const account = {
     accountId: selected?.id ?? '',
     accountName: credential.nickname ?? credential.uin ?? credential.uid,
@@ -245,6 +249,19 @@ export async function workBuddyWebStatus(
 }
 
 /**
+ * The region a request addresses, or a 400 answer. Absent parameter means the
+ * domestic tab; an unknown value is refused rather than guessed.
+ */
+function requestRegion(req: IncomingMessage, res: ServerResponse): WorkBuddyRegion | undefined {
+  const region = regionOfStatusUrl(req.url ?? '/')
+  if (region === undefined) {
+    json(res, 400, { error: 'unknown region' })
+    return undefined
+  }
+  return region
+}
+
+/**
  * Mount the read-only routes on a context where `webServer` is available.
  * The caller uses `ctx.inject(['webServer'], ...)`, so Desktop startup order
  * cannot make this registration disappear.
@@ -263,8 +280,10 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
           json(res, 403, { error: 'origin-not-trusted' })
           return
         }
+        const region = requestRegion(req, res)
+        if (region === undefined) return
         try {
-          json(res, 200, await workBuddyWebStatus(deps))
+          json(res, 200, await workBuddyWebStatus(deps, region))
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })
         }
@@ -276,8 +295,10 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
         if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
         try {
-          json(res, 200, { accounts: (await deps.store.accounts()).map(toWebAccount) })
+          json(res, 200, { accounts: (await deps.store(region).accounts()).map(toWebAccount) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })
         }
@@ -289,8 +310,10 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
         if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
         try {
-          const credential = await deps.store.resolve()
+          const credential = await deps.store(region).resolve()
           const current = await deps.client.fetchCheckinStatus(credential)
           if (!current.active) return json(res, 409, { error: 'check-in activity is not active' })
           if (current.todayCheckedIn) return json(res, 200, { alreadyCheckedIn: true, checkin: current })
@@ -302,18 +325,19 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeRefresh = ctx.webServer.register({ 
+    const disposeRefresh = ctx.webServer.register({
       kind: 'exact',
       path: WORKBUDDY_MODELS_REFRESH_PATH,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
         if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
         if (deps.discoverModels === undefined) return json(res, 503, { error: 'model refresh unavailable' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
         try {
-          // The refreshed catalog belongs to the selected credential's region,
-          // so its context budgets must come from that same region's slot.
-          const region = regionOf((await deps.store.resolve()).domain)
-          const models = await deps.discoverModels()
+          // The refreshed catalog belongs to the requested region, so its
+          // context budgets come from that same region's slot.
+          const models = await deps.discoverModels(region)
           json(res, 200, { models: models.map(model => toWebModel(model, deps.contextBudgets(region))) })
         } catch (error: unknown) {
           json(res, 500, { error: safeMessage(error) })

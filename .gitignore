@@ -6,3 +6,4 @@ coverage/
 .env
 .DS_Store
 .dsh-vision-router/
+.dsh-npm-cache/

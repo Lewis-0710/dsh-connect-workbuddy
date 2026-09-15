@@ -10,6 +10,7 @@ import {
   workbuddyAccountId,
   WorkBuddyCredentialStore,
 } from '../src/auth.ts'
+import type { WorkBuddyCredential } from '../src/auth.ts'
 
 let root: string
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), 'wb-auth-')) })
@@ -370,5 +371,149 @@ describe('WorkBuddyCredentialStore refresh', () => {
       refresh: async () => { throw new Error('nope') },
     })
     await expect(store.resolve()).rejects.toThrow(/sign in again/)
+  })
+})
+
+describe('WorkBuddyCredentialStore region scoping', () => {
+  /** One CN account (live) and one international account (backup). */
+  async function writeMixedRegions(): Promise<void> {
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-cn', uin: '100000000001', nickname: 'Alpha-CN' },
+      auth: { accessToken: 'token-cn', refreshToken: 'r', expiresAt: Date.now() + 86_400_000, domain: 'www.codebuddy.cn' },
+    }))
+    await writeAuth('workbuddy-desktop.2026-07-01T00-00-00-000Z.info', {
+      account: { uid: 'uid-global', uin: '100000000009', nickname: 'Gamma-Global' },
+      auth: { accessToken: 'token-global', refreshToken: 'r', expiresAt: Date.now() + 86_400_000, domain: 'www.workbuddy.ai' },
+    })
+  }
+
+  it('a region-scoped store only discovers its own region accounts', async () => {
+    await writeMixedRegions()
+    const cn = new WorkBuddyCredentialStore({
+      region: 'cn',
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: join(root, 'own-cn.json'),
+      legacyOwnPath: join(root, 'legacy.json'),
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const global = new WorkBuddyCredentialStore({
+      region: 'global',
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: join(root, 'own-global.json'),
+      legacyOwnPath: join(root, 'legacy.json'),
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    expect((await cn.accounts()).map(account => account.accountName)).toEqual(['Alpha-CN'])
+    expect((await global.accounts()).map(account => account.accountName)).toEqual(['Gamma-Global'])
+    // Each region's default credential is its own region's.
+    expect((await cn.current())?.domain).toBe('www.codebuddy.cn')
+    expect((await global.current())?.domain).toBe('www.workbuddy.ai')
+  })
+
+  it('a region store does not see the other region explicitly selected account', async () => {
+    await writeMixedRegions()
+    const global = new WorkBuddyCredentialStore({
+      region: 'global',
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: join(root, 'own-global.json'),
+      legacyOwnPath: join(root, 'legacy.json'),
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const cnAccounts = await new WorkBuddyCredentialStore({
+      region: 'cn',
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: join(root, 'own-cn.json'),
+      legacyOwnPath: join(root, 'legacy.json'),
+      refresh: async () => ({ accessToken: 'never' }),
+    }).accounts()
+    global.selectAccount(cnAccounts[0]?.id)
+    // A CN account id in the global store: not found → no silent fallback to
+    // the global account, exactly like a vanished selection.
+    expect(await global.current()).toBeUndefined()
+  })
+
+  it('the legacy single own copy serves only the region it belongs to', async () => {
+    const legacyPath = join(root, 'legacy.json')
+    // A legacy refreshed copy carrying a CN credential.
+    await writeFile(legacyPath, `${JSON.stringify({
+      version: 1,
+      accountId: 'x',
+      credential: {
+        accessToken: 'legacy-cn', refreshToken: 'r',
+        expiresAt: Date.now() + 86_400_000, domain: 'www.codebuddy.cn',
+        uid: 'uid-cn', uin: '100000000001', nickname: 'Alpha-CN',
+        source: 'desktop', filePath: legacyPath,
+      },
+    })}\n`, 'utf8')
+
+    const cn = new WorkBuddyCredentialStore({
+      region: 'cn',
+      authDirs: [join(root, 'missing')],
+      ownPath: join(root, 'own-cn.json'),
+      legacyOwnPath: legacyPath,
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const global = new WorkBuddyCredentialStore({
+      region: 'global',
+      authDirs: [join(root, 'missing')],
+      ownPath: join(root, 'own-global.json'),
+      legacyOwnPath: legacyPath,
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    // CN adopts the legacy copy as its migration source...
+    expect((await cn.current())?.accessToken).toBe('legacy-cn')
+    // ...while the global region never inherits the CN credential.
+    expect(await global.current()).toBeUndefined()
+  })
+
+  it('a region refresh persists into the region own file, leaving the legacy copy alone', async () => {
+    const legacyPath = join(root, 'legacy.json')
+    const regionPath = join(root, 'own-global.json')
+    await writeAuth(LIVE, {
+      account: { uid: 'uid-global', uin: '100000000009', nickname: 'Gamma-Global' },
+      auth: { accessToken: 'token-global-old', refreshToken: 'r', expiresAt: Date.now() + 60_000, domain: 'www.workbuddy.ai' },
+    })
+    await writeFile(legacyPath, `${JSON.stringify({
+      version: 1,
+      credential: {
+        accessToken: 'legacy-stale', refreshToken: 'r',
+        expiresAt: Date.now() - 1000, domain: 'www.codebuddy.cn',
+        uid: 'uid-cn', uin: '100000000001', nickname: 'Alpha-CN',
+        source: 'desktop', filePath: legacyPath,
+      },
+    })}\n`, 'utf8')
+
+    const store = new WorkBuddyCredentialStore({
+      region: 'global',
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: regionPath,
+      legacyOwnPath: legacyPath,
+      refresh: async () => ({ accessToken: 'token-global-new', expiresInSec: 3600 }),
+    })
+    const credential = await store.resolve()
+    expect(credential.accessToken).toBe('token-global-new')
+    // The refreshed token lands in the per-region file...
+    const saved = JSON.parse(await readFile(regionPath, 'utf8')) as { credential: { accessToken: string } }
+    expect(saved.credential.accessToken).toBe('token-global-new')
+    // ...and the legacy copy is untouched (it carried the other region).
+    const legacy = JSON.parse(await readFile(legacyPath, 'utf8')) as { credential: { accessToken: string } }
+    expect(legacy.credential.accessToken).toBe('legacy-stale')
+  })
+
+  it('logout removes every plugin-owned copy the store could read', async () => {
+    const legacyPath = join(root, 'legacy.json')
+    const regionPath = join(root, 'own-cn.json')
+    await writeFile(regionPath, '{}\n', 'utf8')
+    await writeFile(legacyPath, '{}\n', 'utf8')
+    const store = new WorkBuddyCredentialStore({
+      region: 'cn',
+      authDirs: [join(root, 'missing')],
+      ownPath: regionPath,
+      legacyOwnPath: legacyPath,
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    await store.logout()
+    await expect(readFile(regionPath, 'utf8')).rejects.toThrow()
+    await expect(readFile(legacyPath, 'utf8')).rejects.toThrow()
   })
 })

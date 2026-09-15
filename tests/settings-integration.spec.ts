@@ -22,20 +22,28 @@ let context: Context | undefined
 afterEach(async () => { await context?.fiber.dispose(); context = undefined })
 
 describe('WorkBuddy provider registration', () => {
-  it('registers provider, settings, and fallback models after shim startup', async () => {
+  it('registers both regional providers, settings, and fallback models after shim startup', async () => {
     const ctx = new Context()
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
     await ctx.plugin(WorkBuddy, {})
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
     expect(ctx.llm.listConfigurableProviders()).toContainEqual({
       provider: 'workbuddy', displayName: 'WorkBuddy', settingsNs: 'workbuddy', settingsPath: [], declared: false,
     })
+    expect(ctx.llm.listConfigurableProviders()).toContainEqual({
+      provider: 'workbuddy-global', displayName: 'WorkBuddy Global', settingsNs: 'workbuddy', settingsPath: [], declared: false,
+    })
     expect(ctx.settings.describe().some(entry => entry.ns === WorkBuddy.WORKBUDDY_SETTINGS_NS)).toBe(true)
-    const models = await ctx.llm.listModels('workbuddy')
-    expect(models.map(model => model.id)).toContain('glm-5.3')
-    expect(models.map(model => model.id)).toContain('deepseek-v4-pro')
+    // Each region serves its own fallback roster.
+    const cnModels = await ctx.llm.listModels('workbuddy')
+    expect(cnModels.map(model => model.id)).toContain('glm-5.3')
+    expect(cnModels.map(model => model.id)).toContain('deepseek-v4-pro')
+    const globalModels = await ctx.llm.listModels('workbuddy-global')
+    expect(globalModels.map(model => model.id)).toContain('gpt-5.6-sol')
+    expect(globalModels.map(model => model.id)).toContain('deepseek-v4.1-flash')
   })
 
   it('serves a usable catalog even with no credentials configured', async () => {
@@ -43,12 +51,13 @@ describe('WorkBuddy provider registration', () => {
     context = ctx
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(MemorySettings)
-    // Point the store at a path that cannot exist so resolution always fails;
-    // the static fallback must still populate the provider.
+    // Point the stores at a path that cannot exist so resolution always fails;
+    // the static fallbacks must still populate both providers.
     await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
-    const models = await ctx.llm.listModels('workbuddy')
-    expect(models.length).toBeGreaterThan(0)
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
+    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    expect((await ctx.llm.listModels('workbuddy-global')).length).toBeGreaterThan(0)
   })
 
   it('applies the image opt-in to the runtime catalog on settings update', async () => {
@@ -58,6 +67,7 @@ describe('WorkBuddy provider registration', () => {
     await ctx.plugin(MemorySettings)
     await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
     await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
 
     // Default: no model is image-capable until the user opts in.
     const before = await ctx.llm.listModels('workbuddy')
@@ -74,6 +84,31 @@ describe('WorkBuddy provider registration', () => {
     const otherAfter = after.find(model => model.id === 'deepseek-v4-pro')
     expect(glmAfter?.inputModalities).toContain('image')
     expect(otherAfter?.inputModalities ?? []).not.toContain('image')
+    // The legacy flat field is CN-only state: the international provider's
+    // glm-5.3 (also on its roster) must NOT inherit the CN opt-in.
+    const globalAfter = await ctx.llm.listModels('workbuddy-global')
+    const globalGlm = globalAfter.find(model => model.id === 'glm-5.3')
+    expect(globalGlm?.inputModalities ?? []).not.toContain('image')
+  })
+
+  it('applies a global-slot opt-in to the international provider only', async () => {
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile: '/nonexistent/workbuddy-desktop.info' })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy-global')
+
+    // A save from the international tab writes regions.global.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, {
+      regions: { global: { imageModelIds: ['gpt-5.6-sol'] } },
+    })
+
+    const globalModels = await ctx.llm.listModels('workbuddy-global')
+    expect(globalModels.find(model => model.id === 'gpt-5.6-sol')?.inputModalities).toContain('image')
+    // The CN provider is untouched by the international tab's save.
+    const cnModels = await ctx.llm.listModels('workbuddy')
+    expect(cnModels.find(model => model.id === 'glm-5.3')?.inputModalities ?? []).not.toContain('image')
   })
 
   it('stops serving on the shim port after disposal', async () => {

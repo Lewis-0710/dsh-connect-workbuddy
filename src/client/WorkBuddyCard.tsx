@@ -8,12 +8,15 @@
  *     60 秒轮询与 AbortController 清理、以及
  *     `IconChevronDownOutline14` 的使用，均来自该项目的 TraeUsageCard。
  *   折叠卡片外壳与 `settings.plugin.item` 槽位形态来自
- *     dingminhua/dsh-subagent-default-model（MIT）。
+ *   dingminhua/dsh-subagent-default-model（MIT）。
  * 改动：
  *   1. 积分区改为「合计 + 按套餐名聚合的进度条」，因为实测单个账号下
  *      同名套餐可达 19 个，逐条渲染会淹没卡片（原项目按上游条目直出）；
  *   2. 模型行补上 WorkBuddy 上游给出的积分倍率、多模态与推理档位；
- *   3. 移除与 WorkBuddy 上游无关的 1M 变体勾选。
+ *   3. 移除与 WorkBuddy 上游无关的 1M 变体勾选；
+ *   4. 双 provider 化后卡片顶部为「国内版 / 国际版」tab 栏 —— 每个 tab
+ *      是一个独立供应商（workbuddy / workbuddy-global），账号、积分、
+ *      模型目录与草稿完全按区域隔离，切 tab 不丢另一侧未保存的草稿。
  *
  * @module dsh-connect-workbuddy/client/WorkBuddyCard
  */
@@ -51,6 +54,14 @@ export type WorkBuddyCardProps =
 
 const POLL_INTERVAL_MS = 60_000
 const WORKBUDDY_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-workbuddy'
+
+/** One region's unsaved model edits; switching tabs never drops these. */
+interface WorkBuddyDraft {
+  models: WorkBuddyWebModel[]
+  enabledIds: Set<string>
+  imageIds: Set<string>
+  contextBudgets: Record<string, number>
+}
 
 /** Inject or refresh the shared card CSS for the current client bundle. */
 if (typeof document !== 'undefined') {
@@ -103,17 +114,28 @@ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
   return { background: color }
 }
 
+/** Read the per-region account selections out of the settings snapshot. */
+function configuredAccountsOf(configured: unknown): Record<string, string> {
+  const accounts = (configured as { accounts?: unknown } | undefined)?.accounts
+  return typeof accounts === 'object' && accounts !== null ? accounts as Record<string, string> : {}
+}
+
 /** Render WorkBuddy sign-in state, credits, and model selection as one card. */
 export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
   const [open, setOpen] = useState(false)
-  const [status, setStatus] = useState<WorkBuddyWebUsage>({ status: 'signed-out', accounts: [] })
+  /** The region whose tab is on screen; each tab is its own provider stack. */
+  const [activeRegion, setActiveRegion] = useState<WorkBuddyWebRegion>('cn')
+  /** Last-known usage per region, so tab dots survive tab switches. */
+  const [statusByRegion, setStatusByRegion] = useState<Partial<Record<WorkBuddyWebRegion, WorkBuddyWebUsage>>>({
+    cn: { status: 'signed-out', accounts: [] },
+    global: { status: 'signed-out', accounts: [] },
+  })
   const [busy, setBusy] = useState(false)
   const [settingsRevision, setSettingsRevision] = useState(0)
-  const [draftModels, setDraftModels] = useState<WorkBuddyWebModel[] | undefined>(undefined)
-  const [draftEnabledIds, setDraftEnabledIds] = useState<Set<string> | undefined>(undefined)
-  const [draftImageIds, setDraftImageIds] = useState<Set<string> | undefined>(undefined)
-  const [draftContextBudgets, setDraftContextBudgets] = useState<Record<string, number> | undefined>(undefined)
+  /** Per-region unsaved model edits; a draft on one tab is never dropped by
+   * switching to the other tab, only by that tab's discard/save. */
+  const [drafts, setDrafts] = useState<Partial<Record<WorkBuddyWebRegion, WorkBuddyDraft>>>({})
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [switchingAccount, setSwitchingAccount] = useState(false)
@@ -128,20 +150,29 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
 
   useEffect(() => settingsScope?.subscribe(() => { setSettingsRevision(value => value + 1) }), [settingsScope])
 
-  const refreshUsage = useCallback(async (signal?: AbortSignal): Promise<WorkBuddyWebUsage | undefined> => {
+  const refreshUsage = useCallback(async (
+    region: WorkBuddyWebRegion,
+    signal?: AbortSignal,
+  ): Promise<WorkBuddyWebUsage | undefined> => {
     try {
-      const response = await fetch(WORKBUDDY_USAGE_PATH, {
+      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_USAGE_PATH, region), {
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
         ...signal === undefined ? {} : { signal },
       })
       const value: unknown = await response.json().catch(() => undefined)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      if (mounted.current && signal?.aborted !== true) setStatus(value as WorkBuddyWebUsage)
-      return value as WorkBuddyWebUsage
+      const usage = value as WorkBuddyWebUsage
+      if (mounted.current && signal?.aborted !== true) {
+        setStatusByRegion(prev => ({ ...prev, [region]: usage }))
+      }
+      return usage
     } catch (error: unknown) {
       if (mounted.current && signal?.aborted !== true) {
-        setStatus({ status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') })
+        setStatusByRegion(prev => ({
+          ...prev,
+          [region]: { status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') },
+        }))
       }
       return undefined
     }
@@ -150,37 +181,37 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   useEffect(() => {
     if (!open) return
     const controller = new AbortController()
-    void refreshUsage(controller.signal)
+    void refreshUsage(activeRegion, controller.signal)
     return () => { controller.abort() }
-  }, [open, refreshUsage])
+  }, [open, activeRegion, refreshUsage])
+
+  const status: WorkBuddyWebUsage = statusByRegion[activeRegion] ?? { status: 'signed-out', accounts: [] }
 
   useEffect(() => {
     if (!open || status.status !== 'signed-in') return
     const controller = new AbortController()
-    const timer = window.setInterval(() => { void refreshUsage(controller.signal) }, POLL_INTERVAL_MS)
+    const timer = window.setInterval(() => { void refreshUsage(activeRegion, controller.signal) }, POLL_INTERVAL_MS)
     return () => {
       window.clearInterval(timer)
       controller.abort()
     }
-  }, [open, refreshUsage, status.status])
+  }, [open, activeRegion, refreshUsage, status.status])
 
   const rescanAccounts = async (): Promise<void> => {
     setBusy(true)
     try {
-      const response = await fetch(WORKBUDDY_ACCOUNTS_REFRESH_PATH, {
+      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_ACCOUNTS_REFRESH_PATH, activeRegion), {
         method: 'POST', headers: { accept: 'application/json' }, credentials: 'same-origin',
       })
       const body = await response.json() as { accounts?: { id: string; selected: boolean }[] }
       if (!response.ok || !Array.isArray(body.accounts)) throw new Error(`HTTP ${response.status}`)
       const selected = body.accounts.find(account => account.selected)?.id
-      const configured = settingsScope?.getSnapshot().value
-      const configuredId = typeof configured === 'object' && configured !== null && typeof (configured as { accountId?: unknown }).accountId === 'string'
-        ? (configured as { accountId: string }).accountId
-        : undefined
+      const configuredAccounts = configuredAccountsOf(settingsScope?.getSnapshot().value)
+      const configuredId = configuredAccounts[activeRegion]
       if (selected !== undefined && selected !== configuredId && settingsScope?.getSnapshot().writable === true) {
-        await settingsScope.set('accountId', selected)
+        await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: selected })
       }
-      await refreshUsage()
+      await refreshUsage(activeRegion)
     } finally {
       if (mounted.current) setBusy(false)
     }
@@ -190,8 +221,9 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     if (settingsScope === undefined) return
     setSwitchingAccount(true)
     try {
-      await settingsScope.set('accountId', accountId)
-      await refreshUsage()
+      const configuredAccounts = configuredAccountsOf(settingsScope.getSnapshot().value)
+      await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: accountId })
+      await refreshUsage(activeRegion)
     } finally {
       if (mounted.current) setSwitchingAccount(false)
     }
@@ -201,14 +233,14 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     setCheckingIn(true)
     setCheckinActionError(undefined)
     try {
-      const response = await fetch(WORKBUDDY_CHECKIN_PATH, {
+      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_CHECKIN_PATH, activeRegion), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
       })
       const body = await response.json().catch(() => undefined) as { error?: string } | undefined
       if (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`)
-      await refreshUsage()
+      await refreshUsage(activeRegion)
     } catch (error: unknown) {
       if (mounted.current) setCheckinActionError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
@@ -219,7 +251,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const refreshModels = async (): Promise<void> => {
     setBusy(true)
     try {
-      const response = await fetch(WORKBUDDY_MODELS_REFRESH_PATH, {
+      const response = await fetch(withWorkBuddyRegion(WORKBUDDY_MODELS_REFRESH_PATH, activeRegion), {
         method: 'POST',
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
@@ -246,7 +278,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       setDraftImageIds(new Set(stillImages))
       setDraftContextBudgets(stillBudgets)
     } catch (error: unknown) {
-      if (mounted.current) setStatus({ status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') })
+      if (mounted.current) setStatusByRegion(prev => ({
+        ...prev,
+        [activeRegion]: { status: 'error', message: error instanceof Error ? error.message : t('row.requestFailed') },
+      }))
     } finally {
       if (mounted.current) setBusy(false)
     }
@@ -307,8 +342,20 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   const savedContextBudgets = typeof savedContextBudgetsSource === 'object' && savedContextBudgetsSource !== null
     ? savedContextBudgetsSource as Record<string, number>
     : {}
-  const activeContextBudgets = draftContextBudgets ?? savedContextBudgets
-  const dirty = draftModels !== undefined || draftEnabledIds !== undefined || draftImageIds !== undefined || draftContextBudgets !== undefined
+  const activeContextBudgets = draft?.contextBudgets ?? savedContextBudgets
+  const dirty = draft !== undefined
+
+  const editDraft = (edit: (current: WorkBuddyDraft) => WorkBuddyDraft): void => {
+    setDrafts(prev => ({
+      ...prev,
+      [activeRegion]: edit(prev[activeRegion] ?? {
+        models: [...visibleModels],
+        enabledIds: new Set(activeEnabledIds),
+        imageIds: new Set(activeImageIds),
+        contextBudgets: { ...activeContextBudgets },
+      }),
+    }))
+  }
 
   const toggleModel = (modelId: string): void => {
     const next = new Set(activeEnabledIds)
@@ -383,7 +430,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       }
 
       discardModels()
-      await refreshUsage()
+      await refreshUsage(activeRegion)
     } catch (error: unknown) {
       if (mounted.current) {
         setSaveError(error instanceof Error ? error.message : t('row.requestFailed'))
@@ -423,6 +470,27 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       <div className="dsm-plugin-card-body" hidden={!open}>
         {open
           ? <div className="dsm-workbuddy-usage">
+              <div className="dsm-workbuddy-tabs" role="tablist" aria-label={title}>
+                {WORKBUDDY_REGIONS.map(region => {
+                  const regionStatus = statusByRegion[region]
+                  return (
+                    <button
+                      key={region}
+                      type="button"
+                      role="tab"
+                      aria-selected={region === activeRegion}
+                      className={`dsm-workbuddy-tab${region === activeRegion ? ' dsm-workbuddy-tab-active' : ''}`}
+                      onClick={() => { setActiveRegion(region) }}
+                    >
+                      {regionStatus === undefined
+                        ? null
+                        : <span aria-hidden="true" className="dsm-workbuddy-tab-dot" style={dotStyle(regionStatus.status)} />}
+                      {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="dsm-workbuddy-models-summary">{t('row.tabHint')}</p>
               <div className="dsm-workbuddy-usage-account">
                 <div className="dsm-workbuddy-usage-account-copy" role="status">
                   <div className="dsm-workbuddy-usage-status">

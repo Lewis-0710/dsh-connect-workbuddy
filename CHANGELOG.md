@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.0.0 (2026-09-15)
+
+### Breaking Changes
+
+- **为什么是 2.0.0**：本版是架构级变更——插件由「单 provider 单活区域」变为「双 provider 并行」，运行形态与外部可见契约均有变化，按语义化版本升主版本号：
+  - **运行形态**：插件现在注册两个 provider 路由（`workbuddy` + `workbuddy-global`）并打开**两个**回环端口（原先各一个）。下游脚本若假定「只存在一个 workbuddy provider」，需适配新增的 `workbuddy-global`。
+  - **CLI `--json` schema v2**：`doctor` / `status` 的 JSON 输出 `schemaVersion` 1 → 2，新增 `regions.{cn,global}` 分区报告；顶层字段保持 CN 语义向后兼容，但按 `schemaVersion` 判断结构的消费方需注意。
+  - **设置 schema 扩展**：新增 `accounts.{cn,global}` 每区域账号选择。旧的单 `accountId` 仍被读取并按其账号实际区域自动归位（软迁移，非硬破坏）；`regions` 分槽结构不变。
+
+### Features
+
+- **🆕 国内版与国际版拆分为两个并行供应商，可同时使用**——此前一个 provider 一次只能活一个区域（选哪个账号整个 `workbuddy` 就服务于哪个区域，切账号 = 翻转整个运行时目录）。现在两侧是两套完全独立的实例，**互不干扰**：
+
+  - **双 provider 注册**：国内版保持 `workbuddy`（老 id 不变，存量会话的默认模型与已保存选择全部继续有效），国际版新增 `workbuddy-global`（displayName `WorkBuddy Global`）。**两边模型同时出现在 DSH 模型选择器里**——不同会话 / 子代理可以各选一边，互不干扰。
+  - **每个区域一套完整运行时栈**：凭据 store、模型 catalog、回环 shim、adapter 各一份。store 按凭据域名过滤可见账号（`workbuddy.ai` → 国际版，其余 → 国内版），两个区域的账号可同时在线。
+  - **插件卡片 tab 化**：设置卡片顶部新增「国内版 / 国际版」tab 栏（带各自登录状态圆点）。每个 tab 有独立的账号选择、积分概览、签到与模型管理；**切 tab 不丢另一侧未保存的草稿**（模型勾选 / 图片开关 / 上下文预算的草稿按区域隔离保存）。4 条卡片路由全部按 `?region=cn|global` 参数化。
+  - **「减少刷新变化」**：一个 tab 里切账号、刷新模型、轮询积分，完全不触碰另一边的运行时目录——绑定另一边模型的进行中会话不受任何影响（单 provider 架构做不到这一点）。
+  - **账号选择按区域独立**：配置新增 `accounts.{cn,global}`，每个 tab 各选各的账号。旧的单 `accountId` 在启动时按其实际所属区域归位（另一区域保持「跟随 App 当前登录」的默认，绝不静默继承错区域的选中账号）。
+  - **凭据刷新副本按区域分文件**：`$DSH_HOME/.workbuddy-auth.cn.json` 与 `.workbuddy-auth.global.json`，双账号同时在线互不覆盖（此前单文件只存一个账号的刷新结果，后写者赢）；旧单文件 `.workbuddy-auth.json` 作为迁移来源保留读取（只被其凭据所属的区域采纳），`logout` 清除全部三个副本。
+  - **CLI 按区域报告**：`doctor` / `status` 分区域列出账号、登录态与积分（JSON schema 升至 v2，新增 `regions` 字段，顶层字段保持 CN 语义向后兼容）；`logout` 清除所有插件自有副本。
+
+### Fixes
+
+- adapter 工厂参数化 provider id / displayName（此前 `WORKBUDDY_PROVIDER` 在 `toPiModel`、`createProvider`、profile 等 5 处硬编码）；`WorkBuddyCatalog` 构造函数接受区域参数，国际实例从第一刻起就 serve 国际 fallback 目录。
+- `registerModelDiscovery` 单 handler 按 `request.provider` 分流区域；web-status 的模型刷新路由不再先 `resolve()` 凭据推导区域（区域直接来自请求参数）。
+
+### Tests
+
+- auth：新增区域化测试 5 例——区域过滤的账号发现、跨区域显式选中不回退、旧单副本只服务其所属区域（迁移）、区域刷新写区域文件不动旧副本、logout 清除全部副本。
+- settings-integration：双 provider 注册断言（`workbuddy` + `workbuddy-global`、两条 configurable provider 目录、各自 fallback 阵容）；跨区域污染回归（CN 的图片勾选绝不泄漏进国际 provider 的同名模型；国际 tab 的保存绝不触碰 CN provider）。
+- web-status：region 参数路由测试（`?region=global` 分发到对应 store、缺省回落 `cn`、未知区域 400 且不触碰 store）；`workBuddyWebStatus` 断言请求区域驱动全部四个区域化访问器。
+
 ## 1.4.0 (2026-09-11)
 
 ### Features

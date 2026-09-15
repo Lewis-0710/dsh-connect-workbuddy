@@ -1,7 +1,9 @@
 /**
- * The `workbuddy` pi-ai provider: one loopback-backed adapter registered
+ * The WorkBuddy pi-ai providers: loopback-backed adapters registered
  * into the Harness LLM seam, assembled from public `dsh-llm-pi-ai`
- * extension points.
+ * extension points. One instance per region — `workbuddy` for the domestic
+ * gateway, `workbuddy-global` for the international one — each pointing at
+ * its own shim and catalog so the two regions serve simultaneously.
  *
  * 参考：corrinehu/dsh-workbuddy-connect（MIT，Copyright (c) 2026 Corrine Hu）
  *   — pi-ai provider 的装配方式（createProvider + openAICompletionsApi +
@@ -9,7 +11,7 @@
  *   DSH 插件结构与 provider 注册的思路参照
  *     franksong2702/dsh-codex-connect（Apache-2.0），经其转引。
  * 改动：模型描述符补上 upstream 给出的多模态与推理档位信息（若有），
- *   供 DSH 的能力判断使用。
+ *   供 DSH 的能力判断使用；工厂参数化 provider id，支持双区域实例。
  *
  * @module dsh-connect-workbuddy/adapter
  */
@@ -24,9 +26,33 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyShim } from './shim.ts'
+import type { WorkBuddyRegion } from './upstream.ts'
 
-/** Provider route this bundle owns. */
+/** Provider route this bundle owns for the domestic (CN) gateway. */
 export const WORKBUDDY_PROVIDER = 'workbuddy'
+
+/** Provider route this bundle owns for the international gateway. */
+export const WORKBUDDY_GLOBAL_PROVIDER = 'workbuddy-global'
+
+/** The provider id each region registers as. */
+export const WORKBUDDY_PROVIDERS: Readonly<Record<WorkBuddyRegion, string>> = {
+  cn: WORKBUDDY_PROVIDER,
+  global: WORKBUDDY_GLOBAL_PROVIDER,
+}
+
+/** Region a provider route id belongs to. */
+export function regionOfProvider(provider: string): WorkBuddyRegion | undefined {
+  for (const [region, id] of Object.entries(WORKBUDDY_PROVIDERS) as [WorkBuddyRegion, string][]) {
+    if (id === provider) return region
+  }
+  return undefined
+}
+
+/** Human-readable provider name, shown in the DSH model picker. */
+export const WORKBUDDY_PROVIDER_DISPLAY_NAMES: Readonly<Record<WorkBuddyRegion, string>> = {
+  cn: 'WorkBuddy',
+  global: 'WorkBuddy Global',
+}
 
 /** Provider idle ceiling while one stream read is outstanding. */
 export const WORKBUDDY_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -71,6 +97,10 @@ export interface WorkBuddyAdapterOptions {
   shim: WorkBuddyShim
   store: WorkBuddyCredentialStore
   catalog: WorkBuddyCatalog
+  /** Provider route id this instance serves; defaults to the CN route. */
+  provider?: string
+  /** pi-ai provider name and profile display name; defaults to the CN name. */
+  displayName?: string
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined
 }
@@ -112,13 +142,13 @@ export function workBuddyModelDisplayName(info: WorkBuddyModelInfo): string {
 }
 
 /** Build one pi-ai model descriptor pointing at the loopback shim. */
-function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
+function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string): Model<Api> {
   const thinkingLevelMap = workBuddyThinkingLevelMap(info)
   return {
     id: info.id,
     name: workBuddyModelDisplayName(info),
     api: 'openai-completions',
-    provider: WORKBUDDY_PROVIDER,
+    provider: providerId,
     baseUrl,
     input: workBuddyModelInput(info),
     cost: NO_COST,
@@ -137,18 +167,20 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string): Model<Api> {
  */
 export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter {
   const { shim, store, catalog, resolveAttachments } = options
+  const providerId = options.provider ?? WORKBUDDY_PROVIDER
+  const providerName = options.displayName ?? 'WorkBuddy'
   void store
 
   const buildModels = (): Model<Api>[] => {
     // The OpenAI SDK pi-ai drives appends `/chat/completions` to baseURL,
     // so the shim's routes line up with the `/v1` prefix in place.
     const baseUrl = `${shim.baseUrl()}/v1`
-    return catalog.current().map(info => toPiModel(info, baseUrl))
+    return catalog.current().map(info => toPiModel(info, baseUrl, providerId))
   }
 
   const base = createProvider({
-    id: WORKBUDDY_PROVIDER,
-    name: 'WorkBuddy',
+    id: providerId,
+    name: providerName,
     auth: {
       apiKey: {
         name: 'WorkBuddy OAuth bearer token',
@@ -170,8 +202,8 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   const provider: Provider = { ...base, getModels: () => buildModels() }
 
   const profile: ResolvedPiAiProviderProfile = {
-    provider: WORKBUDDY_PROVIDER,
-    displayName: 'WorkBuddy',
+    provider: providerId,
+    displayName: providerName,
     streamIdleTimeoutMs: WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-connect-workbuddy retryPolicy'),
     configuredMaxTokens: new Map(),
@@ -185,7 +217,9 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     piProvider: provider,
   }
 
-  let profiles = new Map<string, ResolvedPiAiProviderProfile>([[WORKBUDDY_PROVIDER, profile]])
+  // Replacing (not mutating) the map is what `invalidate` uses to force the
+  // adapter's next profiles read to rebuild its snapshot.
+  let profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
 
   const adapter = new PiAiAdapter({
     profiles: () => profiles,
@@ -201,7 +235,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
   return {
     adapter,
     invalidate: () => {
-      profiles = new Map<string, ResolvedPiAiProviderProfile>([[WORKBUDDY_PROVIDER, profile]])
+      profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
     },
   }
 }

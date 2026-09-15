@@ -1,6 +1,9 @@
 /**
  * WorkBuddy models for DeepSeek Harness, reusing the WorkBuddy desktop
- * app's sign-in. Registers the `workbuddy` provider; streaming, tool calls,
+ * app's sign-in. Registers TWO provider routes — `workbuddy` (domestic CN
+ * gateway) and `workbuddy-global` (international workbuddy.ai gateway) —
+ * each backed by its own region-scoped credential store, model catalog, and
+ * loopback shim, so both regions serve simultaneously; streaming, tool calls,
  * compaction, and permissions stay Harness-owned.
  *
  * 参考：corrinehu/dsh-workbuddy-connect（MIT，Copyright (c) 2026 Corrine Hu）
@@ -14,7 +17,9 @@
  *     `registerModelDiscovery` 与 `discoverModels` 返回草稿目录的做法，
  *     均来自该项目。
  * 改动：账号选择严格绑定用户显式选择的账号（不按积分自动切换），
- *   并移除与本项目上游无关的 1M 变体逻辑。
+ *   并移除与本项目上游无关的 1M 变体逻辑；双 provider 化后国内版与
+ *   国际版各持一套 store/catalog/shim，区域由凭据域名隔离，
+ *   设置卡片以 tab 区分两个供应商。
  *
  * @module dsh-connect-workbuddy
  */
@@ -25,11 +30,12 @@ import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
-import { deriveCatalog, fallbackModelsFor, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
+import { deriveCatalog, fallbackModelsFor, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
 import { createWorkBuddyAdapter, workBuddyModelDisplayName, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
-import { regionOf, WorkBuddyUpstreamClient } from './upstream.ts'
+import type { WorkBuddyShim } from './shim.ts'
+import { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
@@ -49,6 +55,7 @@ export {
   defaultDesktopAuthCandidates,
   defaultDesktopAuthDirs,
   defaultDesktopAuthPath,
+  legacyWorkbuddyOwnAuthPath,
   parseWorkBuddyAuth,
   WORKBUDDY_AUTH_FILE_ENV,
   WORKBUDDY_AUTH_FILENAME,
@@ -96,12 +103,15 @@ export {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
+  WORKBUDDY_REGION_PARAM,
+  WORKBUDDY_REGIONS,
   WORKBUDDY_USAGE_PATH,
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
   type WorkBuddyWebModel,
   type WorkBuddyWebPackage,
+  type WorkBuddyWebRegion,
   type WorkBuddyWebUsage,
 } from './status-paths.ts'
 
@@ -130,8 +140,18 @@ export interface WorkBuddyRegionState {
 export interface Config {
   /** Explicit WorkBuddy desktop auth-file path, overriding env and platform defaults. */
   authFile?: string
-  /** Stable local account selector; tokens remain outside settings. */
+  /**
+   * @deprecated Legacy single-slot account selector from before the dual
+   * provider split. It is attributed to whichever region the account actually
+   * belongs to (resolved once at startup from the local account scan); new
+   * writes go to {@link Config.accounts}.
+   */
   accountId?: string
+  /**
+   * Per-region account selections, keyed `cn` | `global`. Each region's tab
+   * writes its own slot; tokens remain outside settings.
+   */
+  accounts?: Partial<Record<WorkBuddyRegion, string>>
   /**
    * Per-region model state, keyed `cn` | `global`. The CN app and the
    * international WorkBuddy AI app expose different rosters, so each keeps its
@@ -167,9 +187,15 @@ const regionStateConfig = z.object({
   contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
 })
 
+const accountSelectionConfig = z.object({
+  cn: z.string().description('Selected domestic (CN) account id (never a token)'),
+  global: z.string().description('Selected international account id (never a token)'),
+})
+
 export const Config: z<Config> = z.object({
   authFile: z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)'),
-  accountId: z.string().description('Selected local WorkBuddy account id (never a token)'),
+  accountId: z.string().description('Deprecated: pre-split account selector, attributed to its own region'),
+  accounts: accountSelectionConfig.description('Per-region account selections, keyed cn | global'),
   regions: z.dict(regionStateConfig).default({}).description('Per-region model directory and selection, keyed cn | global'),
   lastCatalog: z.array(modelConfig).description('Deprecated: pre-region-split CN model directory') as z<WorkBuddyModelInfo[]>,
   enabledModelIds: z.array(z.string()).default([]).description('Deprecated: pre-region-split CN selection'),
@@ -199,20 +225,41 @@ export function regionStateOf(config: Config, region: WorkBuddyRegion): WorkBudd
 }
 
 /**
- * Start the loopback endpoint, register the `workbuddy` provider, and
- * refresh the model catalog from the upstream once credentials allow it.
- * The static fallback catalog serves from the first moment, so an offline
- * upstream never leaves the provider empty.
+ * One region's runtime stack. The two regions are fully parallel provider
+ * stacks — separate credential stores, catalogs, and loopback shims — so the
+ * domestic and international accounts serve simultaneously and a change on
+ * one side (account switch, catalog refresh) never touches the other.
+ */
+interface WorkBuddyRegionStack {
+  store: WorkBuddyCredentialStore
+  catalog: WorkBuddyCatalog
+  shim: WorkBuddyShim
+}
+
+/** Every region, in card tab order. */
+const REGION_KEYS: readonly WorkBuddyRegion[] = ['cn', 'global']
+
+/**
+ * Start both regions' loopback endpoints, register the `workbuddy` (CN) and
+ * `workbuddy-global` (international) providers, and refresh each region's
+ * model catalog from the upstream once that region's credentials allow it.
+ * The static fallback catalogs serve from the first moment, so an offline
+ * upstream never leaves a provider empty.
  */
 export function apply(ctx: Context, config: Config): void {
   const client = new WorkBuddyUpstreamClient()
-  const store = new WorkBuddyCredentialStore({
-    ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
-    refresh: credential => client.refreshToken(credential),
-  })
-  if (config.accountId !== undefined) store.selectAccount(config.accountId)
-  const catalog = new WorkBuddyCatalog()
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+
+  const stacks = {} as Record<WorkBuddyRegion, WorkBuddyRegionStack>
+  for (const region of REGION_KEYS) {
+    const store = new WorkBuddyCredentialStore({
+      region,
+      ...config.authFile === undefined ? {} : { desktopPath: config.authFile },
+      refresh: credential => client.refreshToken(credential),
+    })
+    const catalog = new WorkBuddyCatalog(region)
+    const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+    stacks[region] = { store, catalog, shim }
+  }
 
   const enabledSet = (value: Config): ReadonlySet<string> => new Set(value.enabledModelIds ?? [])
   const imageSet = (value: Config): ReadonlySet<string> => new Set(value.imageModelIds ?? [])
@@ -253,25 +300,26 @@ export function apply(ctx: Context, config: Config): void {
 
   let current = () => config
   let invalidateCatalog = (): void => {}
+
   /**
-   * Region of the selected account, tracked so a settings change can recompute
-   * the runtime catalog without re-resolving the credential synchronously.
-   * Every path that reads the credential (startup seed, discovery, card route)
-   * refreshes it, so it converges on the real region.
+   * Legacy migration for the pre-split single `accountId`: its region is
+   * resolved once from the local account scan and the selection is then
+   * attributed to that region ONLY — the other region keeps its documented
+   * default (follow the app's current sign-in) instead of silently inheriting
+   * a selection that belongs to the other side of the split.
    */
-  let currentRegion: WorkBuddyRegion = 'cn'
-  const regionOfCredential = async (): Promise<WorkBuddyRegion> => {
-    try {
-      currentRegion = regionOf((await store.resolve()).domain)
-    } catch {
-      // Unsigned/unresolvable credential: keep the last known region so the
-      // catalog still reflects the account the user last had selected.
-    }
-    return currentRegion
+  let legacyAccountRegion: WorkBuddyRegion | undefined
+  const effectiveAccountFor = (region: WorkBuddyRegion, value: Config): string | undefined => {
+    const explicit = value.accounts?.[region]
+    if (explicit !== undefined) return explicit
+    return legacyAccountRegion === region ? value.accountId : undefined
   }
-  const discoverModels = async (signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]> => {
-    const credential = await store.resolve()
-    currentRegion = regionOf(credential.domain)
+
+  const discoverModels = async (
+    region: WorkBuddyRegion,
+    signal?: AbortSignal,
+  ): Promise<readonly WorkBuddyModelInfo[]> => {
+    const credential = await stacks[region].store.resolve()
     return client.fetchModels(credential, signal)
   }
 
@@ -293,7 +341,7 @@ export function apply(ctx: Context, config: Config): void {
   // can mount after this row, so wait reactively for it instead of sampling
   // ctx.get() once during apply (which silently loses all routes on Desktop).
   ctx.inject(['webServer'], (webCtx) => registerWorkBuddyStatusRoute(webCtx, {
-    store,
+    store: region => stacks[region].store,
     client,
     displayModels: region => displayModels(current(), region),
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
@@ -305,79 +353,111 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
     setSource(source: () => Config) { current = source },
-    onChange() {
-      const next = current()
-      store.setDesktopPath(next.authFile)
-      store.selectAccount(next.accountId)
-      catalog.set(configuredModels(next, currentRegion))
-      invalidateCatalog()
-      // The account may have changed region (CN ↔ international); converge the
-      // runtime catalog on the selected credential's own region.
-      void regionOfCredential().then(region => {
-        catalog.set(configuredModels(current(), region))
-        invalidateCatalog()
-      })
-    },
+    onChange() { applySelection(current()) },
   })
+
+  // Initial wiring: selections, per-region catalogs from the saved state.
+  applySelection(config)
+
+  // Attribute the legacy single-account selection to its own region once the
+  // local scan can tell which one that is, then re-apply. Until this resolves
+  // (or when no legacy field exists) both regions simply run their defaults.
+  void (async () => {
+    const id = current().accountId
+    if (id === undefined) return
+    try {
+      for (const region of REGION_KEYS) {
+        const accounts = await stacks[region].store.accounts()
+        if (accounts.some(account => account.id === id)) {
+          legacyAccountRegion = region
+          applySelection(current())
+          return
+        }
+      }
+      // The saved account vanished (app replaced its sign-in): no attribution,
+      // both regions keep their defaults, and the card lets the user re-select.
+    } catch {
+      // Scan failure: keep defaults; the next card-driven scan converges.
+    }
+  })()
 
   let stopped = false
   ctx.effect(() => () => {
     stopped = true
-    void shim.close()
+    for (const region of REGION_KEYS) void stacks[region].shim.close()
     void clearHostHeartbeat()
   })
 
-  void shim.ready
+  void Promise.all(REGION_KEYS.map(region => stacks[region].shim.ready))
     .then(async () => {
       if (stopped) return
 
-      let invalidate: (() => void) | undefined
+      const adapters = {} as Record<WorkBuddyRegion, WorkBuddyAdapter>
       try {
-        // Constructed only once the listener holds a port: the provider's
+        // Constructed only once the listeners hold their ports: a provider's
         // models read the shim origin at construction time.
-        const workbuddy = createWorkBuddyAdapter({
-          shim,
-          store,
-          catalog,
-          resolveAttachments: () => ctx.get('attachments'),
-        })
-        invalidate = workbuddy.invalidate
-        invalidateCatalog = () => { workbuddy.invalidate() }
+        for (const region of REGION_KEYS) {
+          adapters[region] = createWorkBuddyAdapter({
+            shim: stacks[region].shim,
+            store: stacks[region].store,
+            catalog: stacks[region].catalog,
+            provider: WORKBUDDY_PROVIDERS[region],
+            displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES[region],
+            resolveAttachments: () => ctx.get('attachments'),
+          })
+        }
+        invalidateCatalog = () => {
+          for (const region of REGION_KEYS) adapters[region].invalidate()
+        }
 
-        let releaseAdapter: (() => void) | undefined
+        let releaseAdapterCn: (() => void) | undefined
+        let releaseAdapterGlobal: (() => void) | undefined
         let releaseDirectory: (() => void) | undefined
         try {
-          releaseAdapter = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], workbuddy.adapter)
-          releaseDirectory = ctx.llm.registerConfigurableProviders([{
-            provider: WORKBUDDY_PROVIDER,
-            displayName: 'WorkBuddy',
-            settingsNs: WORKBUDDY_SETTINGS_NS,
-            settingsPath: [],
-            declared: false,
-          }])
+          releaseAdapterCn = ctx.llm.registerAdapter([WORKBUDDY_PROVIDER], adapters.cn.adapter)
+          releaseAdapterGlobal = ctx.llm.registerAdapter([WORKBUDDY_GLOBAL_PROVIDER], adapters.global.adapter)
+          releaseDirectory = ctx.llm.registerConfigurableProviders([
+            {
+              provider: WORKBUDDY_PROVIDER,
+              displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES.cn,
+              settingsNs: WORKBUDDY_SETTINGS_NS,
+              settingsPath: [],
+              declared: false,
+            },
+            {
+              provider: WORKBUDDY_GLOBAL_PROVIDER,
+              displayName: WORKBUDDY_PROVIDER_DISPLAY_NAMES.global,
+              settingsNs: WORKBUDDY_SETTINGS_NS,
+              settingsPath: [],
+              declared: false,
+            },
+          ])
         } finally {
-          if (releaseAdapter === undefined || releaseDirectory === undefined) {
+          if (releaseAdapterCn === undefined || releaseAdapterGlobal === undefined || releaseDirectory === undefined) {
             // Registration threw; release whichever half landed.
-            releaseAdapter?.()
+            releaseAdapterCn?.()
+            releaseAdapterGlobal?.()
             releaseDirectory?.()
           }
         }
         try {
           ctx.effect(() => () => {
-            releaseAdapter?.()
+            releaseAdapterCn?.()
+            releaseAdapterGlobal?.()
             releaseDirectory?.()
           })
         } catch {
           // The plugin was disposed during registration; release immediately —
-          // the plugin-level disposer already closed the shim.
-          releaseAdapter?.()
+          // the plugin-level disposer already closed the shims.
+          releaseAdapterCn?.()
+          releaseAdapterGlobal?.()
           releaseDirectory?.()
         }
 
         ctx.llm.registerModelDiscovery(WORKBUDDY_SETTINGS_NS, async (request, signal) => {
-          if (request.provider !== WORKBUDDY_PROVIDER) return []
-          const discovered = await discoverModels(signal)
-          const region = currentRegion
+          const region = regionOfProvider(request.provider ?? '')
+          if (region === undefined) return []
+          const discovered = await discoverModels(region, signal)
           const state = regionStateOf(current(), region)
           const next = withImageSelection(
             deriveCatalog(
@@ -405,36 +485,37 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
 
-      // Seed the catalog from the currently selected account (or the live
-      // sign-in default when nothing is selected yet).
+      // Seed each region's catalog from that region's selected account (or the
+      // live sign-in default when nothing is selected yet).
       if (stopped) return
 
-      void (async () => {
-        try {
-          const credential = await store.resolve()
-          if (stopped) return
-          currentRegion = regionOf(credential.domain)
-          const models = await client.fetchModels(credential)
-          if (stopped) return
-          const state = regionStateOf(current(), currentRegion)
-          catalog.set(withImageSelection(
-            deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
-            new Set(state.imageModelIds ?? []),
-          ))
-          invalidate?.()
-          // `lastCatalog` is deliberately NOT seeded here: it belongs to the
-          // user's saved selection, written only by the card's explicit save
-          // (via settingsScope). Until then the card shows the live fallback
-          // directory and one press of "Refresh" captures the real one.
-        } catch (error: unknown) {
-          ctx.logger.warn(
-            'dsh-connect-workbuddy: dynamic model catalog unavailable; serving the static fallback list',
-            error,
-          )
-        }
-      })()
+      for (const region of REGION_KEYS) {
+        void (async () => {
+          try {
+            const credential = await stacks[region].store.resolve()
+            if (stopped) return
+            const models = await client.fetchModels(credential)
+            if (stopped) return
+            const state = regionStateOf(current(), region)
+            stacks[region].catalog.set(withImageSelection(
+              deriveCatalog(models, new Set(state.enabledModelIds ?? []), state.contextBudgets ?? {}),
+              new Set(state.imageModelIds ?? []),
+            ))
+            adapters[region].invalidate()
+            // `lastCatalog` is deliberately NOT seeded here: it belongs to the
+            // user's saved selection, written only by the card's explicit save
+            // (via settingsScope). Until then the card shows the live fallback
+            // directory and one press of "Refresh" captures the real one.
+          } catch (error: unknown) {
+            ctx.logger.warn(
+              `dsh-connect-workbuddy: dynamic ${region} model catalog unavailable; serving the static fallback list`,
+              error,
+            )
+          }
+        })()
+      }
     })
     .catch((error: unknown) => {
-      ctx.logger.error('dsh-connect-workbuddy: loopback endpoint failed to start; provider not registered', error)
+      ctx.logger.error('dsh-connect-workbuddy: loopback endpoint failed to start; providers not registered', error)
     })
 }
