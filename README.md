@@ -1,3 +1,15 @@
+> [!NOTE]
+> **Fork 维护版本** | 本仓库是 [dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy) 的维护分支。
+> 
+> **与上游差异**：
+> 1. 扩展模型目录（catalog）支持 327+ 模型定义与自定义模型配置
+2. 重写 WorkBuddyCard 组件，优化用量展示与状态提示
+3. 新增 web-status 模块支持 WorkBuddy 网页端用量监控
+4. 适配 Cordis 4.0.2 与 DSH 客户端包拓扑变更
+5. 扩展测试套件覆盖 catalog、adapter、upstream 模块
+> 
+> 详见 [sync.patch](./sync.patch)。
+
 <p align="center">
   <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy settings panel" />
 </p>
