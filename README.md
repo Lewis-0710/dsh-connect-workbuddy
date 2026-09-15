@@ -60,9 +60,9 @@ DSH PiAiAdapter（每个 provider 一套）
   -> DSH 本地执行工具并回传结果
 ```
 
-国内版与国际版各持一套完整的运行时栈——凭据 store、模型 catalog、回环 shim、adapter——按凭据域名（`workbuddy.ai` → 国际版，其余 → 国内版）隔离可见账号，所以**两个区域的账号可以同时在线、同时被不同会话使用**。
+国内版与国际版各持一套完整的运行时栈——凭据 store、模型 catalog、回环 shim、adapter——按凭据域名（`workbuddy.ai` / `codebuddy.ai` → 国际版，其余 → 国内版）隔离可见账号，所以**两个区域的账号可以同时在线、同时被不同会话使用**。国际版有两个品牌域名：桌面端登录在 `workbuddy.ai`，CodeBuddy CLI 登录在 `codebuddy.ai`，两者都是国际版。
 
-模型目录按区域取自各自的正确来源：国内版走 `/v2/enterprises/personal/models`，国际版走 `www.workbuddy.ai/v3/config`（配置服务按客户端渠道返回不同清单，国际版必须用桌面端 User-Agent 才能取到账号真实的 20 个模型，含免费的 `deepseek-v4.1-flash`）。积分概览走 `https://www.codebuddy.cn/v2/billing/meter/get-user-resource`（国际版账号自动路由到 `https://www.workbuddy.ai`），均为只读接口。
+模型目录按区域取自各自的正确来源：国内版走 `/v2/enterprises/personal/models`，国际版走 `<国际网关>/v3/config`（配置服务按客户端渠道返回不同清单，国际版必须用桌面端 User-Agent 才能取到账号真实的 20 个模型，含免费的 `deepseek-v4.1-flash`）。积分概览走 `https://www.codebuddy.cn/v2/billing/meter/get-user-resource`（国际版账号自动路由到其凭据所属的国际网关，`workbuddy.ai` 或 `codebuddy.ai`——两个品牌域名的凭据互不通用），均为只读接口。
 
 凭据读取自 WorkBuddy 桌面 App 自身的 auth 文件（只读）；刷新得到的 token 按区域存放在 `$DSH_HOME/.workbuddy-auth.cn.json` 与 `$DSH_HOME/.workbuddy-auth.global.json`（双账号同时在线互不覆盖；旧的单文件 `.workbuddy-auth.json` 作为迁移来源保留读取），桌面端文件永不被写入。
 

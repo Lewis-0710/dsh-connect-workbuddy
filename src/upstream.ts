@@ -196,23 +196,50 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   return 'client'
 }
 
-/** Region for a login domain; an empty domain means CN (matching upstream tooling). */
+/**
+ * Region for a login domain; an empty domain means CN (matching upstream tooling).
+ *
+ * The international product is reachable under TWO brand domains: the WorkBuddy
+ * AI desktop app signs in at `workbuddy.ai`, while the CodeBuddy CLI signs the
+ * same international account in at `codebuddy.ai` (verified against a real
+ * credential file, issue #4). Both are served by the same gateway stack — a
+ * read-only probe shows `/v3/config` answering HTTP 200 with the same JSON
+ * envelope on both hosts — so both classify as `global`. Missing the
+ * `codebuddy.ai` spelling sent those tokens to the CN gateway, which rejected
+ * them at the openresty layer with an HTML 401.
+ */
 export function regionOf(domain: string): WorkBuddyRegion {
   const lowered = domain.trim().toLowerCase()
   if (lowered === 'workbuddy.ai' || lowered.endsWith('.workbuddy.ai')) return 'global'
+  if (lowered === 'codebuddy.ai' || lowered.endsWith('.codebuddy.ai')) return 'global'
   return 'cn'
 }
 
+/**
+ * Gateway for a global credential.
+ *
+ * International accounts are NOT interchangeable across brand domains: a token
+ * issued at `codebuddy.ai` is rejected by the `workbuddy.ai` gateway (and vice
+ * versa), so the base must follow the credential's OWN domain rather than a
+ * single hardcoded host. Anything unrecognised falls back to `workbuddy.ai`,
+ * the desktop app's gateway.
+ */
+export function globalBase(domain: string): string {
+  const lowered = domain.trim().toLowerCase()
+  if (lowered === 'codebuddy.ai' || lowered.endsWith('.codebuddy.ai')) return 'https://www.codebuddy.ai'
+  return GLOBAL_BASE
+}
+
 function chatBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_CHAT_BASE
+  return regionOf(credential.domain) === 'global' ? globalBase(credential.domain) : CN_CHAT_BASE
 }
 
 function billingBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
+  return regionOf(credential.domain) === 'global' ? globalBase(credential.domain) : CN_BILLING_BASE
 }
 
 function originReferer(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
+  return regionOf(credential.domain) === 'global' ? globalBase(credential.domain) : CN_BILLING_BASE
 }
 
 /** Headers every upstream request shares. */
@@ -531,7 +558,7 @@ export class WorkBuddyUpstreamClient {
   async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
     const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
     if (regionOf(credential.domain) === 'global') {
-      const response = await fetch(`${GLOBAL_BASE}${GLOBAL_CONFIG_PATH}`, {
+      const response = await fetch(`${globalBase(credential.domain)}${GLOBAL_CONFIG_PATH}`, {
         headers: {
           'Authorization': `Bearer ${credential.accessToken}`,
           'Accept': 'application/json',

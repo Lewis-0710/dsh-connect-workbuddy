@@ -44,10 +44,11 @@ const BODY_LIMIT = 400
 // Mirrors src/upstream.ts regionOf / chatBase / billingBase / originReferer
 // ---------------------------------------------------------------------------
 
-/** Verbatim copy of the shipped `regionOf` (src/upstream.ts:199). */
+/** Verbatim copy of the shipped `regionOf` (src/upstream.ts:210). */
 function regionOf(domain) {
   const lowered = (domain ?? '').trim().toLowerCase()
   if (lowered === 'workbuddy.ai' || lowered.endsWith('.workbuddy.ai')) return 'global'
+  if (lowered === 'codebuddy.ai' || lowered.endsWith('.codebuddy.ai')) return 'global'
   return 'cn'
 }
 
@@ -55,9 +56,16 @@ const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
 
-const chatBase = cred => (regionOf(cred.domain) === 'global' ? GLOBAL_BASE : CN_CHAT_BASE)
-const billingBase = cred => (regionOf(cred.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE)
-const originReferer = cred => (regionOf(cred.domain) === 'global' ? GLOBAL_BASE : CN_BILLING_BASE)
+/** Verbatim copy of the shipped `globalBase` (src/upstream.ts:226). */
+function globalBase(domain) {
+  const lowered = (domain ?? '').trim().toLowerCase()
+  if (lowered === 'codebuddy.ai' || lowered.endsWith('.codebuddy.ai')) return 'https://www.codebuddy.ai'
+  return GLOBAL_BASE
+}
+
+const chatBase = cred => (regionOf(cred.domain) === 'global' ? globalBase(cred.domain) : CN_CHAT_BASE)
+const billingBase = cred => (regionOf(cred.domain) === 'global' ? globalBase(cred.domain) : CN_BILLING_BASE)
+const originReferer = cred => (regionOf(cred.domain) === 'global' ? globalBase(cred.domain) : CN_BILLING_BASE)
 
 /** Verbatim copy of shipped `billingHeaders` (src/upstream.ts:258). */
 function billingHeaders(cred) {
@@ -279,8 +287,8 @@ async function main() {
     }
     process.stdout.write(
       codebuddyAiCreds.length === 0
-        ? `${C.yellow}PREMISE A: FAILS${C.off} — no credential carries a codebuddy.ai domain (${codebuddyAiCreds.length} found).\n`
-        : `${C.green}PREMISE A: HOLDS${C.off} — ${codebuddyAiCreds.length} credential(s) carry codebuddy.ai.\n`,
+        ? `${C.yellow}PREMISE A: not observed here${C.off} — no credential under this auth dir carries a codebuddy.ai domain. NOTE: the desktop app signs in at workbuddy.ai; a CodeBuddy CLI login writes codebuddy.ai, so an empty result only means THIS machine has no CLI login.\n`
+        : `${C.green}PREMISE A: HOLDS${C.off} — ${codebuddyAiCreds.length} credential(s) carry codebuddy.ai (now classified global by regionOf).\n`,
     )
   }
 
