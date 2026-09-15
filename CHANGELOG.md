@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.2 (2026-09-15)
+
+### Fixes
+
+- **修复「同一账号多个凭据文件时选中已失效的那一个」，导致积分/签到/模型全部返回 openresty HTML 401**。此前按**存储的 `expiresAt` 最大**来挑选凭据，但 `expiresAt` 描述的是「签发时有效期有多长」，**不代表上游仍然接受** —— 上游吊销 token 时不会同步改写该字段，于是一个早已失效的备份文件可以声称比真实可用的文件**更晚过期**，从而永远被选中。
+
+  - **实测复现**：本机某账号有 8 个凭据文件，其中 `2026-07-08` 的备份声称 `2027-07-06` 过期（最远），而真正可用的当前登录文件只到 `2026-11-14`。旧逻辑因此始终选中那个 07-08 的死文件，三个端点（`get-user-resource` / `checkin-activity-status` / `models`）全部返回 `401 Authorization Required` + `openresty`。
+  - **改用 `auth.lastRefreshTime` 作为新鲜度判据**：这是上游自己的签发时间，是唯一可靠的信号。新增 `WorkBuddyCredential.lastRefreshAtMs` 字段并在解析时读入；`preferred()`、多账号去重、以及插件自有副本的合并**三处**统一改用新的 `isFresher()` 比较器。
+  - **排序优先级**：① live 文件 `workbuddy-desktop.info`（应用当前登录）→ ② `lastRefreshAtMs` 较新者 → ③ `expiresAtMs`（仅作为文档缺失该字段时的回退，保证比较是全序的）。
+  - **实测验证**：切换判据后，本机 11 个账号选中的凭据**全部返回 200**（此前 `老丁`、`LaoDing` 等均命中死文件）。
+  - 插件自有刷新副本（无 `lastRefreshTime`）不参与签发时间比较：它只在**确实更长寿**时取代桌面端备份，且**永不顶替 live 登录**。
+
+- **上游返回 HTML 401 时给出可执行的提示**，不再原样抛出 HTML 片段。识别 openresty / APISIX 的鉴权拒绝，改为提示「凭据已被上游网关拒绝，通常说明选中的是旧登录留下的失效凭据；请重新登录 WorkBuddy 桌面端后在卡片中选择该账号，可运行 `dsh-connect-workbuddy doctor` 查看全部凭据」。非鉴权类的非 JSON 响应（如 502 网关错误）保持原有的通用提示。
+
+### Tests
+
+- `auth.spec.ts` 新增 4 例：**备份之间**按签发时间而非存储过期时间选择（回归锚点，旧逻辑下必失败）、文档缺失 `lastRefreshTime` 时回退到过期时间、`auth.lastRefreshTime` 的正确解析、缺失该字段时保持 `undefined`。
+- `upstream.spec.ts` 新增 2 例：网关 HTML 401 被转写为可执行提示（且不泄漏 `<html>`）、非鉴权类的非 JSON 失败仍保留通用提示。
+- 全套 **126 个测试通过**。
+
 ## 2.0.1 (2026-09-15)
 
 ### Fixes

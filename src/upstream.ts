@@ -373,12 +373,35 @@ interface Envelope {
   data: unknown
 }
 
+/**
+ * Gateway (openresty/APISIX) rejection of a token it no longer accepts.
+ *
+ * The business APIs answer JSON; an edge rejection answers an HTML error page
+ * instead. A 401 that is not JSON therefore means the credential was refused
+ * before routing — almost always a revoked/expired token rather than a bug in
+ * the request. Detected from the body so a proxy's own error page (which would
+ * also be HTML) is still described accurately.
+ */
+function isGatewayAuthRejection(status: number, text: string): boolean {
+  if (status !== 401 && status !== 403) return false
+  const lower = text.toLowerCase()
+  return lower.includes('openresty') || lower.includes('apisix') || lower.includes('authorization required')
+}
+
 async function readEnvelope(response: Response): Promise<Envelope> {
   const text = await response.text()
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
+    if (isGatewayAuthRejection(response.status, text)) {
+      throw new Error(
+        `workbuddy: the signed-in credential was rejected by the upstream gateway (http ${response.status}).`
+        + ' The stored token is no longer accepted — most likely a stale credential file from an earlier'
+        + ' sign-in was selected. Re-sign in to the WorkBuddy desktop app, then pick that account in the'
+        + ' plugin card. Run `dsh-connect-workbuddy doctor` to list every discovered credential.',
+      )
+    }
     throw new Error(`workbuddy upstream returned non-JSON (http ${response.status}): ${text.slice(0, 160)}`)
   }
   if (typeof parsed !== 'object' || parsed === null) {

@@ -76,6 +76,24 @@ describe('parseWorkBuddyAuth', () => {
     expect(parseWorkBuddyAuth(JSON.stringify({ auth: {} }), '/tmp/x')).toBeUndefined()
     expect(parseWorkBuddyAuth('not json', '/tmp/x')).toBeUndefined()
   })
+
+  it('reads auth.lastRefreshTime as the freshness signal', () => {
+    const issued = Date.parse('2026-09-15T20:15:32.861Z')
+    const credential = parseWorkBuddyAuth(JSON.stringify({
+      account: { uid: 'u', uin: '1', nickname: 'Alpha' },
+      auth: {
+        accessToken: 't', refreshToken: 'r', domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() + 86_400_000,
+        lastRefreshTime: issued,
+      },
+    }), '/tmp/a.info')
+    expect(credential?.lastRefreshAtMs).toBe(issued)
+  })
+
+  it('leaves lastRefreshAtMs undefined when the document omits it', () => {
+    expect(parseWorkBuddyAuth(JSON.stringify(accountDoc({})), '/tmp/a.info')?.lastRefreshAtMs)
+      .toBeUndefined()
+  })
 })
 
 describe('expiryToMs', () => {
@@ -240,6 +258,58 @@ describe('WorkBuddyCredentialStore multi-account discovery', () => {
     const credential = await store.current()
     expect(credential?.accessToken).toBe('token-live')
     expect(credential?.filePath.endsWith(LIVE)).toBe(true)
+  })
+
+  it('picks the newest BACKUP by issuance time, not by stored expiry', async () => {
+    // Regression for a real machine: both accounts looked "valid" by expiry,
+    // yet 老丁 and LaoDing both resolved to long-dead 2026-06/07 backups whose
+    // stored `expiresAt` (2027) outranked the working files, so every billing
+    // call came back an openresty HTML 401. `lastRefreshTime` is the upstream's
+    // own issuance time and is the only trustworthy freshness signal.
+    const A = { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' }
+    // A revoked July backup that advertises the FARTHEST expiry.
+    await writeAuth('workbuddy-desktop.2026-07-08T05-24-13-686Z.info', accountDoc({
+      account: A,
+      auth: {
+        accessToken: 'token-revoked', refreshToken: 'r',
+        expiresAt: Date.now() + 400 * 86_400_000,
+        lastRefreshTime: Date.parse('2026-07-08T05:10:00Z'),
+      },
+    }))
+    // The genuinely current backup: later issuance, SHORTER advertised life.
+    await writeAuth('workbuddy-desktop.2026-09-15T20-14-41-180Z.info', accountDoc({
+      account: A,
+      auth: {
+        accessToken: 'token-current', refreshToken: 'r',
+        expiresAt: Date.now() + 60 * 86_400_000,
+        lastRefreshTime: Date.parse('2026-09-15T20:14:41Z'),
+      },
+    }))
+
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const credential = await store.current()
+    expect(credential?.accessToken).toBe('token-current')
+  })
+
+  it('falls back to expiry when a document omits lastRefreshTime', async () => {
+    // Older/foreign documents may lack the field; ranking must stay total.
+    const A = { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' }
+    await writeAuth('workbuddy-desktop.2026-07-01T00-00-00-000Z.info', accountDoc({
+      account: A,
+      auth: { accessToken: 'token-short', refreshToken: 'r', expiresAt: Date.now() + 3_600_000 },
+    }))
+    await writeAuth('workbuddy-desktop.2026-08-01T00-00-00-000Z.info', accountDoc({
+      account: A,
+      auth: { accessToken: 'token-long', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    expect((await store.current())?.accessToken).toBe('token-long')
   })
 
   it('still exposes backup-only accounts for explicit switching', async () => {

@@ -42,6 +42,17 @@ export interface WorkBuddyCredential {
   source: 'desktop' | 'dsh'
   /** Absolute path of the auth file this credential was read from. */
   filePath: string
+  /**
+   * Epoch ms the upstream last issued this token (`auth.lastRefreshTime`).
+   *
+   * This is the ONLY trustworthy freshness signal. `expiresAtMs` cannot be
+   * used for ranking: when the upstream revokes a token it leaves the stored
+   * `expiresAt` untouched, so a long-dead backup can claim a LATER expiry than
+   * the live sign-in (observed on a real machine — a 2026-07-08 backup claimed
+   * 2027-07-06 while the live file expired 2026-11-14, and only the live file
+   * was accepted). Undefined when the document omits the field.
+   */
+  lastRefreshAtMs?: number
 }
 
 /** Read-only sign-in summary for status and doctor output. */
@@ -229,6 +240,7 @@ export function parseWorkBuddyAuth(
   if (accessToken === '') return undefined
   const expiresAtMs = typeof auth['expiresAt'] === 'number' ? expiryToMs(auth['expiresAt']) : 0
   const refreshExpiresAtMs = typeof auth['refreshExpiresAt'] === 'number' ? expiryToMs(auth['refreshExpiresAt']) : undefined
+  const lastRefreshAtMs = typeof auth['lastRefreshTime'] === 'number' ? expiryToMs(auth['lastRefreshTime']) : undefined
   const enterpriseId = optionalString(identity['enterpriseId'])
   const nickname = optionalString(identity['nickname'])
   const uin = optionalString(identity['uin'])
@@ -242,6 +254,7 @@ export function parseWorkBuddyAuth(
     ...enterpriseId === undefined ? {} : { enterpriseId },
     ...nickname === undefined ? {} : { nickname },
     ...uin === undefined ? {} : { uin },
+    ...lastRefreshAtMs === undefined ? {} : { lastRefreshAtMs },
     source: 'desktop',
     filePath,
   }
@@ -260,6 +273,42 @@ export function parseWorkBuddyAuth(
  */
 function fileRank(path: string): number {
   return authFileName(path) === WORKBUDDY_LIVE_FILENAME ? 0 : 1
+}
+
+/**
+ * Whether `candidate` is a better pick than `incumbent` for the same account.
+ *
+ * Ordering, strongest signal first:
+ *
+ * 1. the live `workbuddy-desktop.info` (the app's current sign-in);
+ * 2. the most recent `lastRefreshAtMs` — the upstream's own issuance time;
+ * 3. `expiresAtMs`, only as a fallback for documents that omit the field.
+ *
+ * Step 2 is what makes this correct. `expiresAt` describes how long the token
+ * was VALID FOR at issue time, not whether it is still accepted: a revoked
+ * backup keeps a far-future `expiresAt` (2027 in the observed case) and would
+ * otherwise outrank the working live credential, which is exactly how a
+ * signed-in account turned into an upstream HTML 401.
+ */
+function isFresher(
+  candidate: WorkBuddyCredential,
+  incumbent: WorkBuddyCredential,
+): boolean {
+  const rankDiff = fileRank(candidate.filePath) - fileRank(incumbent.filePath)
+  if (rankDiff !== 0) return rankDiff < 0
+  const candidateRefresh = candidate.lastRefreshAtMs
+  const incumbentRefresh = incumbent.lastRefreshAtMs
+  if (candidateRefresh !== undefined && incumbentRefresh !== undefined) {
+    if (candidateRefresh !== incumbentRefresh) return candidateRefresh > incumbentRefresh
+  } else if (candidateRefresh !== undefined) {
+    // A file that records its issuance time outranks one that does not; the
+    // field is always present in desktop documents, so this only decides
+    // against synthetic or truncated input.
+    return true
+  } else if (incumbentRefresh !== undefined) {
+    return false
+  }
+  return candidate.expiresAtMs > incumbent.expiresAtMs
 }
 
 /**
@@ -496,19 +545,23 @@ export class WorkBuddyCredentialStore {
         byId.set(id, credential)
         continue
       }
-      // The live file outranks backups; between two backups the fresher
-      // expiry wins.
-      const better = fileRank(credential.filePath) < fileRank(existing.filePath)
-        || (fileRank(credential.filePath) === fileRank(existing.filePath)
-          && credential.expiresAtMs > existing.expiresAtMs)
-      if (better) byId.set(id, credential)
+      // The live file outranks backups; between two backups the freshest
+      // issuance time wins (see {@link isFresher}).
+      if (isFresher(credential, existing)) byId.set(id, credential)
     }
     for (const own of await this.readOwns()) {
       if (!this.matchesRegion(own.domain)) continue
       const id = workbuddyAccountId(own)
       const existing = byId.get(id)
-      // The refreshed copy wins only when it lives longer.
-      if (existing === undefined || own.expiresAtMs > existing.expiresAtMs) byId.set(id, own)
+      // The plugin's refreshed copy carries no `lastRefreshTime` of its own, so
+      // it cannot be ranked by issuance time. It supersedes a desktop file only
+      // when it actually lives longer — and never displaces the live sign-in,
+      // which the app keeps up to date and which the upstream always accepts.
+      if (existing === undefined) {
+        byId.set(id, own)
+      } else if (fileRank(existing.filePath) !== 0 && own.expiresAtMs > existing.expiresAtMs) {
+        byId.set(id, own)
+      }
     }
     return [...byId.values()]
   }
@@ -522,12 +575,7 @@ export class WorkBuddyCredentialStore {
    */
   private preferred(credentials: readonly WorkBuddyCredential[]): WorkBuddyCredential | undefined {
     if (credentials.length === 0) return undefined
-    return credentials.reduce((best, credential) => {
-      if (fileRank(credential.filePath) < fileRank(best.filePath)) return credential
-      if (fileRank(credential.filePath) === fileRank(best.filePath)
-        && credential.expiresAtMs > best.expiresAtMs) return credential
-      return best
-    })
+    return credentials.reduce((best, credential) => isFresher(credential, best) ? credential : best)
   }
 
   /** Token-free account list for the plugin card. */
