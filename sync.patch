@@ -19,7 +19,7 @@ index 222d626..df0aaac 100644
    <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy settings panel" />
  </p>
 diff --git a/package.json b/package.json
-index 95f4ea2..22a87f0 100644
+index 0199f47..6c4f5b8 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,6 +1,6 @@
@@ -28,7 +28,7 @@ index 95f4ea2..22a87f0 100644
 -  "displayName": "DSH Connect WorkBuddy",
 +  "displayName": "WorkBuddy",
    "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
-   "version": "2.0.1",
+   "version": "2.0.2",
    "author": "dingminhua",
 diff --git a/src/adapter.ts b/src/adapter.ts
 index a6e3ad1..6b98c31 100644
@@ -701,7 +701,7 @@ index e810864..4ee52be 100644
      supportedEfforts?: readonly string[]
      defaultEffort?: string
 diff --git a/src/upstream.ts b/src/upstream.ts
-index 3e92cd0..fd504eb 100644
+index 662786a..bf73136 100644
 --- a/src/upstream.ts
 +++ b/src/upstream.ts
 @@ -59,6 +59,7 @@ export interface WorkBuddyUpstreamModel {
@@ -712,7 +712,7 @@ index 3e92cd0..fd504eb 100644
    reasoning?: WorkBuddyReasoning
    descriptionZh?: string
    descriptionEn?: string
-@@ -448,12 +449,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
+@@ -471,12 +472,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
    const creditMultiplier = parseCreditMultiplier(raw['credits'])
    const reasoning = parseReasoning(raw['reasoning'])
    const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
@@ -727,7 +727,7 @@ index 3e92cd0..fd504eb 100644
      ...reasoning === undefined ? {} : { reasoning },
      ...descriptionZh === undefined ? {} : { descriptionZh },
      ...descriptionEn === undefined ? {} : { descriptionEn },
-@@ -549,15 +552,8 @@ export class WorkBuddyUpstreamClient {
+@@ -572,15 +575,8 @@ export class WorkBuddyUpstreamClient {
    }
  
    /**
@@ -745,7 +745,7 @@ index 3e92cd0..fd504eb 100644
     */
    async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
      const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
-@@ -597,7 +593,18 @@ export class WorkBuddyUpstreamClient {
+@@ -620,7 +616,18 @@ export class WorkBuddyUpstreamClient {
      const data = typeof envelope.data === 'object' && envelope.data !== null
        ? envelope.data as Record<string, unknown>
        : {}
@@ -878,10 +878,10 @@ index 20af37a..9ff4bef 100644
      expect(derived.map(model => [model.id, model.contextWindow])).toEqual([
        ['glm-5.3', 200_000],
 diff --git a/tests/upstream.spec.ts b/tests/upstream.spec.ts
-index 2db2a38..5df1813 100644
+index 6347bb0..8531e79 100644
 --- a/tests/upstream.spec.ts
 +++ b/tests/upstream.spec.ts
-@@ -266,33 +266,36 @@ describe('parseUpstreamModel', () => {
+@@ -296,33 +296,36 @@ describe('parseUpstreamModel', () => {
      expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
    })
  
