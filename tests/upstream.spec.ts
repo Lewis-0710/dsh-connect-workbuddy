@@ -214,6 +214,36 @@ describe('WorkBuddyUpstreamClient.fetchModels', () => {
     // keep receiving the CLI agent the plugin actually chats as.
     expect(seen['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
   })
+
+  it('explains a gateway HTML 401 instead of echoing the raw page', async () => {
+    // The upstream edge (openresty/APISIX) answers an HTML page when it refuses
+    // a revoked token. The user needs to know to re-sign in, not to read markup.
+    vi.stubGlobal('fetch', async () => ({
+      ok: false,
+      status: 401,
+      text: async () => '<html><head><title>401 Authorization Required</title></head>'
+        + '<body><center><h1>401 Authorization Required</h1></center>'
+        + '<hr><center>openresty</center></body></html>',
+    }) as unknown as Response)
+    const error = await new WorkBuddyUpstreamClient()
+      .fetchModels(credential('www.codebuddy.cn'))
+      .then(() => undefined, (reason: unknown) => reason as Error)
+    expect(error?.message).toContain('rejected by the upstream gateway')
+    expect(error?.message).toContain('Re-sign in')
+    expect(error?.message).not.toContain('<html>')
+  })
+
+  it('keeps the generic message for a non-auth non-JSON failure', async () => {
+    vi.stubGlobal('fetch', async () => ({
+      ok: false,
+      status: 502,
+      text: async () => '<html><body>Bad Gateway</body></html>',
+    }) as unknown as Response)
+    const error = await new WorkBuddyUpstreamClient()
+      .fetchModels(credential('www.codebuddy.cn'))
+      .then(() => undefined, (reason: unknown) => reason as Error)
+    expect(error?.message).toContain('non-JSON')
+  })
 })
 
 describe('parseCreditMultiplier', () => {
