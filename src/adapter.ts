@@ -135,11 +135,13 @@ export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyTh
   return map
 }
 
-export function workBuddyModelDisplayName(info: WorkBuddyModelInfo): string {
+export function workBuddyDisplayName(info: WorkBuddyModelInfo): string {
   if (info.creditMultiplier === undefined) return info.name
   const suffix = `(${info.creditMultiplier.toFixed(2)}x)`
   return info.name.endsWith(suffix) ? info.name : `${info.name} ${suffix}`
 }
+
+export const workBuddyModelDisplayName = workBuddyDisplayName
 
 /** Build one pi-ai model descriptor pointing at the loopback shim. */
 function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string): Model<Api> {

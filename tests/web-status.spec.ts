@@ -221,35 +221,6 @@ describe('workBuddyWebStatus region routing', () => {
 })
 
 describe('registerWorkBuddyStatusRoute', () => {
-  it('mounts the usage, account, check-in, and model routes', async () => {
-    const registered: string[] = []
-    // Provide the service through Cordis so `ctx.get('webServer')` sees it.
-    const FakeWebServer = {
-      name: 'webServer',
-      inject: [] as const,
-      apply(ctx: Context) {
-        ctx.provide('webServer', {
-          register: (entry: { path: string }) => {
-            registered.push(entry.path)
-            return () => {}
-          },
-        })
-      },
-    }
-    const ctx = new Context()
-    await ctx.plugin(FakeWebServer)
-    const { registerWorkBuddyStatusRoute } = await import('../src/web-status.ts')
-    registerWorkBuddyStatusRoute(ctx, deps())
-    expect(registered).toEqual([
-      '/plugins/dsh-connect-workbuddy/usage',
-      '/plugins/dsh-connect-workbuddy/accounts/refresh',
-      '/plugins/dsh-connect-workbuddy/checkin',
-      '/plugins/dsh-connect-workbuddy/models/refresh',
-      '/plugins/dsh-connect-workbuddy/settings/save',
-    ])
-    await ctx.fiber.dispose()
-  })
-
   /** A captured route entry: the path plus its HTTP handler. */
   interface CapturedEntry {
     path: string

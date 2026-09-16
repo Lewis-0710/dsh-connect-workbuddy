@@ -32,7 +32,17 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { WorkBuddyCredentialStore } from './auth.ts'
 import { deriveCatalog, fallbackModelsFor, WorkBuddyCatalog } from './catalog.ts'
 import type { WorkBuddyContextBudget, WorkBuddyModelInfo } from './catalog.ts'
-import { createWorkBuddyAdapter, workBuddyModelDisplayName, workBuddyModelInput, WORKBUDDY_PROVIDER } from './adapter.ts'
+import {
+  createWorkBuddyAdapter,
+  regionOfProvider,
+  workBuddyDisplayName,
+  workBuddyModelInput,
+  WORKBUDDY_GLOBAL_PROVIDER,
+  WORKBUDDY_PROVIDER,
+  WORKBUDDY_PROVIDER_DISPLAY_NAMES,
+  WORKBUDDY_PROVIDERS,
+} from './adapter.ts'
+import type { WorkBuddyAdapter } from './adapter.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import type { WorkBuddyShim } from './shim.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
@@ -40,7 +50,19 @@ import type { WorkBuddyRegion } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 
-export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, workBuddyModelDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap, type WorkBuddyAdapter } from './adapter.ts'
+export {
+  WORKBUDDY_GLOBAL_PROVIDER,
+  WORKBUDDY_PROVIDER,
+  WORKBUDDY_PROVIDER_DISPLAY_NAMES,
+  WORKBUDDY_PROVIDERS,
+  WORKBUDDY_STREAM_IDLE_TIMEOUT_MS,
+  createWorkBuddyAdapter,
+  regionOfProvider,
+  workBuddyDisplayName,
+  workBuddyModelInput,
+  workBuddyThinkingLevelMap,
+  type WorkBuddyAdapter,
+} from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
   deriveCatalog,
@@ -106,6 +128,9 @@ export {
   WORKBUDDY_REGION_PARAM,
   WORKBUDDY_REGIONS,
   WORKBUDDY_USAGE_PATH,
+  regionOfStatusUrl,
+  toPersistedWorkBuddyModel,
+  withWorkBuddyRegion,
   type WorkBuddyWebAccount,
   type WorkBuddyWebCheckin,
   type WorkBuddyWebCredits,
@@ -261,8 +286,6 @@ export function apply(ctx: Context, config: Config): void {
     stacks[region] = { store, catalog, shim }
   }
 
-  const enabledSet = (value: Config): ReadonlySet<string> => new Set(value.enabledModelIds ?? [])
-  const imageSet = (value: Config): ReadonlySet<string> => new Set(value.imageModelIds ?? [])
   // Stamp image capability onto a model list. When the user has configured
   // explicit image choices (imageModelIds), those take precedence. Otherwise,
   // the upstream supportsImages/multimodal flag is preserved as the default.
@@ -323,18 +346,14 @@ export function apply(ctx: Context, config: Config): void {
     return client.fetchModels(credential, signal)
   }
 
-  const saveSettings = async (payload: import('./web-status.ts').WorkBuddySettingsPayload): Promise<void> => {
-    const prev = current()
-    const next: Config = {
-      ...prev,
-      ...payload.lastCatalog !== undefined ? { lastCatalog: [...payload.lastCatalog] } : {},
-      ...payload.enabledModelIds !== undefined ? { enabledModelIds: [...payload.enabledModelIds] } : {},
-      ...payload.imageModelIds !== undefined ? { imageModelIds: [...payload.imageModelIds] } : {},
-      ...payload.contextBudgets !== undefined ? { contextBudgets: { ...payload.contextBudgets } } : {},
+  /** Push the current config into every region's store selection and catalog. */
+  const applySelection = (value: Config): void => {
+    for (const region of REGION_KEYS) {
+      stacks[region].store.setDesktopPath(value.authFile)
+      stacks[region].store.selectAccount(effectiveAccountFor(region, value))
+      stacks[region].catalog.set(configuredModels(value, region))
     }
-    catalog.set(configuredModels(next, currentRegion))
     invalidateCatalog()
-    await ctx.settings.update(WORKBUDDY_SETTINGS_NS, payload)
   }
 
   // Same-origin routes backing the Plugin-configuration card. `webServer`
@@ -348,7 +367,6 @@ export function apply(ctx: Context, config: Config): void {
     imageModelIds: region => regionStateOf(current(), region).imageModelIds ?? [],
     contextBudgets: region => regionStateOf(current(), region).contextBudgets ?? {},
     discoverModels,
-    saveSettings,
   }))
 
   ctx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, Config, config, {
@@ -469,7 +487,7 @@ export function apply(ctx: Context, config: Config): void {
           )
           return next.map(model => ({
             id: model.id,
-            name: workBuddyModelDisplayName(model),
+            name: workBuddyDisplayName(model),
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
             inputModalities: workBuddyModelInput(model),

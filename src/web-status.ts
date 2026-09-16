@@ -30,26 +30,12 @@ import {
   WORKBUDDY_ACCOUNTS_REFRESH_PATH,
   WORKBUDDY_CHECKIN_PATH,
   WORKBUDDY_MODELS_REFRESH_PATH,
-  WORKBUDDY_SETTINGS_SAVE_PATH,
   WORKBUDDY_USAGE_PATH,
 } from './status-paths.ts'
 import type { WorkBuddyWebAccount, WorkBuddyWebCredits, WorkBuddyWebUsage } from './status-paths.ts'
 
-export {
-  WORKBUDDY_ACCOUNTS_REFRESH_PATH,
-  WORKBUDDY_CHECKIN_PATH,
-  WORKBUDDY_MODELS_REFRESH_PATH,
-  WORKBUDDY_SETTINGS_SAVE_PATH,
-  WORKBUDDY_USAGE_PATH,
-}
+export { WORKBUDDY_ACCOUNTS_REFRESH_PATH, WORKBUDDY_CHECKIN_PATH, WORKBUDDY_MODELS_REFRESH_PATH, WORKBUDDY_USAGE_PATH }
 export type { WorkBuddyWebUsage }
-
-export interface WorkBuddySettingsPayload {
-  lastCatalog?: readonly WorkBuddyModelInfo[]
-  enabledModelIds?: readonly string[]
-  imageModelIds?: readonly string[]
-  contextBudgets?: Readonly<Record<string, number>>
-}
 
 /** Constructor dependencies. */
 export interface WorkBuddyStatusRouteOptions {
@@ -69,10 +55,8 @@ export interface WorkBuddyStatusRouteOptions {
   imageModelIds(region: WorkBuddyRegion): readonly string[]
   /** Saved local DSH context budgets by model id, for the requested region. */
   contextBudgets(region: WorkBuddyRegion): Readonly<Record<string, number | undefined>>
-  /** Re-read the live catalog from the upstream. */
-  discoverModels?(signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
-  /** Save updated model settings directly on the host. */
-  saveSettings?(payload: WorkBuddySettingsPayload): Promise<void>
+  /** Re-read the live catalog of one region from the upstream. */
+  discoverModels?(region: WorkBuddyRegion, signal?: AbortSignal): Promise<readonly WorkBuddyModelInfo[]>
 }
 
 /** Redact token-like content before it crosses to the browser. */
@@ -87,32 +71,6 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
   res.end(payload)
-}
-
-/** Read JSON request body with a 1MB limit. */
-function readJson(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    let size = 0
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > 1_048_576) {
-        reject(new Error('payload too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => {
-      try {
-        const text = Buffer.concat(chunks).toString('utf8')
-        resolve(text.trim() === '' ? {} : JSON.parse(text))
-      } catch (err) {
-        reject(err)
-      }
-    })
-    req.on('error', reject)
-  })
 }
 
 /** Loopback browser origins only; other devices are refused until trusted origins exist. */
@@ -344,24 +302,7 @@ export function registerWorkBuddyStatusRoute(ctx: Context, deps: WorkBuddyStatus
         }
       },
     })
-    const disposeSave = ctx.webServer.register({
-      kind: 'exact',
-      path: WORKBUDDY_SETTINGS_SAVE_PATH,
-      handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
-        if (deps.saveSettings === undefined) return json(res, 503, { error: 'saveSettings unavailable' })
-        try {
-          const body = await readJson(req) as WorkBuddySettingsPayload
-          await deps.saveSettings(body)
-          json(res, 200, { ok: true })
-        } catch (error: unknown) {
-          json(res, 500, { error: safeMessage(error) })
-        }
-      },
-    })
     return () => {
-      disposeSave()
       disposeRefresh()
       disposeCheckin()
       disposeAccounts()
