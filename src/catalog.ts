@@ -386,17 +386,18 @@ export function fallbackModelsFor(region: 'cn' | 'global'): readonly WorkBuddyMo
  */
 export type WorkBuddyContextBudget = number
 
-/** Apply the saved local DSH budget; models above 200K default to their native context. */
+/** Apply the saved local DSH budget; allows explicit overrides like 1M even if native context is smaller. */
 export function applyContextBudgets(
   catalog: readonly WorkBuddyModelInfo[],
   budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
 ): WorkBuddyModelInfo[] {
-  return catalog.map(model => ({
-    ...model,
-    contextWindow: model.contextWindow > 200_000
-      ? Math.min(model.contextWindow, budgets[model.id] ?? model.contextWindow)
-      : model.contextWindow,
-  }))
+  return catalog.map(model => {
+    const budget = budgets[model.id]
+    return {
+      ...model,
+      contextWindow: typeof budget === 'number' && budget > 0 ? budget : model.contextWindow,
+    }
+  })
 }
 
 export function deriveCatalog(

@@ -40,6 +40,15 @@ describe('deriveCatalog', () => {
     ])
   })
 
+  it('allows explicit budget higher than native context window (e.g. 1M override for misreported models)', () => {
+    const derived = deriveCatalog(
+      [{ id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, maxTokens: 48_000 }],
+      new Set(['glm-5.1']),
+      { 'glm-5.1': 1_000_000 },
+    )
+    expect(derived[0]!.contextWindow).toBe(1_000_000)
+  })
+
   it('ignores selections for models no longer in the directory', () => {
     const derived = deriveCatalog(MODELS, new Set(['glm-5.3', 'retired-model']))
     expect(derived.map(model => model.id)).toEqual(['glm-5.3'])

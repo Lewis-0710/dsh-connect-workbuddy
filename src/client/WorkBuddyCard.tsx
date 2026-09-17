@@ -107,6 +107,20 @@ function formatCapacity(value: number | undefined, unknown: string): string {
   return formatNumber(value)
 }
 
+/**
+ * Context budget options for a model row.
+ * Always includes 1M (even if native context is smaller) to allow overriding upstream catalog errors.
+ */
+function getContextBudgetOptions(nativeContextWindow: number): number[] {
+  const options = new Set<number>()
+  if (nativeContextWindow > 200_000) {
+    options.add(200_000)
+  }
+  options.add(nativeContextWindow)
+  options.add(1_000_000)
+  return Array.from(options).sort((a, b) => a - b)
+}
+
 function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
   const color = status === 'signed-in'
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
@@ -667,28 +681,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                 <span>{t('row.modelImage')}</span>
                               </label>
                               <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
-                                {model.nativeContextWindow > 200_000
-                                  ? <label>
-                                      <input
-                                        type="radio"
-                                        name={`context-${model.id}`}
-                                        checked={activeContextBudgets[model.id] === 200_000}
-                                        disabled={settingsScope?.getSnapshot().writable !== true || saving}
-                                        onChange={() => { setContextBudget(model.id, 200_000) }}
-                                      />
-                                      <span>200K</span>
-                                    </label>
-                                  : null}
-                                <label>
-                                  <input
-                                    type="radio"
-                                    name={`context-${model.id}`}
-                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] !== 200_000}
-                                    disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
-                                    onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
-                                  />
-                                  <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
-                                </label>
+                                {getContextBudgetOptions(model.nativeContextWindow).map(budget => (
+                                  <label key={budget}>
+                                    <input
+                                      type="radio"
+                                      name={`context-${model.id}`}
+                                      checked={(activeContextBudgets[model.id] ?? model.nativeContextWindow) === budget}
+                                      disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                      onChange={() => { setContextBudget(model.id, budget) }}
+                                    />
+                                    <span>{formatCapacity(budget, t('row.modelUnknown'))}</span>
+                                  </label>
+                                ))}
                               </fieldset>
                             </div>
                             <div className="dsm-workbuddy-model-details">

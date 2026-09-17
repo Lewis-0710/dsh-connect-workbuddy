@@ -110,7 +110,9 @@ function toWebModel(
   return {
     id: model.id,
     name: model.name,
-    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? model.contextWindow) : model.contextWindow,
+    contextWindow: typeof budgets[model.id] === 'number' && (budgets[model.id] as number) > 0
+      ? (budgets[model.id] as number)
+      : model.contextWindow,
     nativeContextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
