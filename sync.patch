@@ -19,7 +19,7 @@ index 222d626..df0aaac 100644
    <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy settings panel" />
  </p>
 diff --git a/package.json b/package.json
-index 0199f47..6c4f5b8 100644
+index 887e26b..71cf243 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,6 +1,6 @@
@@ -28,7 +28,7 @@ index 0199f47..6c4f5b8 100644
 -  "displayName": "DSH Connect WorkBuddy",
 +  "displayName": "WorkBuddy",
    "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
-   "version": "2.0.2",
+   "version": "2.0.3",
    "author": "dingminhua",
 diff --git a/src/adapter.ts b/src/adapter.ts
 index a6e3ad1..6b98c31 100644
@@ -81,7 +81,7 @@ index a6e3ad1..6b98c31 100644
      provider: providerId,
      baseUrl,
 diff --git a/src/catalog.ts b/src/catalog.ts
-index 8ea9676..f264b50 100644
+index 8ea9676..44473b8 100644
 --- a/src/catalog.ts
 +++ b/src/catalog.ts
 @@ -26,18 +26,312 @@ export type WorkBuddyModelInfo = WorkBuddyUpstreamModel
@@ -409,25 +409,33 @@ index 8ea9676..f264b50 100644
  ]
  
  /**
-@@ -92,7 +386,7 @@ export function fallbackModelsFor(region: 'cn' | 'global'): readonly WorkBuddyMo
+@@ -92,17 +386,18 @@ export function fallbackModelsFor(region: 'cn' | 'global'): readonly WorkBuddyMo
   */
  export type WorkBuddyContextBudget = number
  
 -/** Apply the saved local DSH budget; models above 200K default to 200K. */
-+/** Apply the saved local DSH budget; models above 200K default to their native context. */
++/** Apply the saved local DSH budget; allows explicit overrides like 1M even if native context is smaller. */
  export function applyContextBudgets(
    catalog: readonly WorkBuddyModelInfo[],
    budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
-@@ -100,7 +394,7 @@ export function applyContextBudgets(
-   return catalog.map(model => ({
-     ...model,
-     contextWindow: model.contextWindow > 200_000
+ ): WorkBuddyModelInfo[] {
+-  return catalog.map(model => ({
+-    ...model,
+-    contextWindow: model.contextWindow > 200_000
 -      ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000)
-+      ? Math.min(model.contextWindow, budgets[model.id] ?? model.contextWindow)
-       : model.contextWindow,
-   }))
+-      : model.contextWindow,
+-  }))
++  return catalog.map(model => {
++    const budget = budgets[model.id]
++    return {
++      ...model,
++      contextWindow: typeof budget === 'number' && budget > 0 ? budget : model.contextWindow,
++    }
++  })
  }
-@@ -110,7 +404,10 @@ export function deriveCatalog(
+ 
+ export function deriveCatalog(
+@@ -110,7 +405,10 @@ export function deriveCatalog(
    enabled: ReadonlySet<string>,
    budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
  ): WorkBuddyModelInfo[] {
@@ -440,7 +448,7 @@ index 8ea9676..f264b50 100644
  }
  
 diff --git a/src/client/WorkBuddyCard.tsx b/src/client/WorkBuddyCard.tsx
-index 06d1d8a..db7c2c3 100644
+index 06d1d8a..7a9c977 100644
 --- a/src/client/WorkBuddyCard.tsx
 +++ b/src/client/WorkBuddyCard.tsx
 @@ -36,7 +36,6 @@ import {
@@ -451,7 +459,28 @@ index 06d1d8a..db7c2c3 100644
  import { WORKBUDDY_CARD_CSS } from './styles.ts'
  import type { WorkBuddySettingsKey } from './locales.ts'
  
-@@ -269,6 +268,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -108,6 +107,20 @@ function formatCapacity(value: number | undefined, unknown: string): string {
+   return formatNumber(value)
+ }
+ 
++/**
++ * Context budget options for a model row.
++ * Always includes 1M (even if native context is smaller) to allow overriding upstream catalog errors.
++ */
++function getContextBudgetOptions(nativeContextWindow: number): number[] {
++  const options = new Set<number>()
++  if (nativeContextWindow > 200_000) {
++    options.add(200_000)
++  }
++  options.add(nativeContextWindow)
++  options.add(1_000_000)
++  return Array.from(options).sort((a, b) => a - b)
++}
++
+ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
+   const color = status === 'signed-in'
+     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
+@@ -269,6 +282,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
        // enabled choices, image opt-ins, or context budgets.
        const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
        const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
@@ -462,7 +491,7 @@ index 06d1d8a..db7c2c3 100644
        const stillBudgets: Record<string, number> = {}
        for (const id of freshIds) {
          const budget = activeContextBudgets[id]
-@@ -278,8 +281,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -278,8 +295,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
          ...prev,
          [activeRegion]: {
            models: fresh,
@@ -473,7 +502,7 @@ index 06d1d8a..db7c2c3 100644
            contextBudgets: stillBudgets,
          },
        }))
-@@ -299,9 +302,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -299,9 +316,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
    // re-mapped onto the current catalog by model id.
    const draft = drafts[activeRegion]
    const visibleModels = draft?.models ?? (status.status === 'signed-in' ? status.models : [])
@@ -491,7 +520,7 @@ index 06d1d8a..db7c2c3 100644
    const activeImageIds = draft?.imageIds ?? savedImageIds
    const configured = settingsScope?.getSnapshot().value
    // Context budgets live in the same per-region slot the save writes into, so a
-@@ -356,6 +365,30 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -356,6 +379,30 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
      }))
    }
  
@@ -522,7 +551,7 @@ index 06d1d8a..db7c2c3 100644
    const discardModels = (): void => {
      setDrafts(prev => {
        const next = { ...prev }
-@@ -416,7 +449,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -416,7 +463,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
          aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
          onClick={() => { setOpen(!open) }}
        >
@@ -530,7 +559,7 @@ index 06d1d8a..db7c2c3 100644
          <span className="dsm-plugin-card-head">
            <span className="dsm-plugin-card-title">{title}</span>
            <span className="dsm-plugin-card-description">{t('row.desc')}</span>
-@@ -587,14 +619,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -587,14 +633,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                            <h3 className="dsm-workbuddy-models-title">{t('row.modelsTitle')}</h3>
                            <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                          </div>
@@ -563,24 +592,47 @@ index 06d1d8a..db7c2c3 100644
                        </div>
                        <div className="dsm-workbuddy-model-list">
                          {visibleModels.map(model => (
-@@ -630,7 +672,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
-                                       <input
-                                         type="radio"
-                                         name={`context-${model.id}`}
+@@ -625,28 +681,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+                                 <span>{t('row.modelImage')}</span>
+                               </label>
+                               <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
+-                                {model.nativeContextWindow > 200_000
+-                                  ? <label>
+-                                      <input
+-                                        type="radio"
+-                                        name={`context-${model.id}`}
 -                                        checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}
-+                                        checked={activeContextBudgets[model.id] === 200_000}
-                                         disabled={settingsScope?.getSnapshot().writable !== true || saving}
-                                         onChange={() => { setContextBudget(model.id, 200_000) }}
-                                       />
-@@ -641,7 +683,7 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
-                                   <input
-                                     type="radio"
-                                     name={`context-${model.id}`}
+-                                        disabled={settingsScope?.getSnapshot().writable !== true || saving}
+-                                        onChange={() => { setContextBudget(model.id, 200_000) }}
+-                                      />
+-                                      <span>200K</span>
+-                                    </label>
+-                                  : null}
+-                                <label>
+-                                  <input
+-                                    type="radio"
+-                                    name={`context-${model.id}`}
 -                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow}
-+                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] !== 200_000}
-                                     disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
-                                     onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
-                                   />
+-                                    disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
+-                                    onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
+-                                  />
+-                                  <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
+-                                </label>
++                                {getContextBudgetOptions(model.nativeContextWindow).map(budget => (
++                                  <label key={budget}>
++                                    <input
++                                      type="radio"
++                                      name={`context-${model.id}`}
++                                      checked={(activeContextBudgets[model.id] ?? model.nativeContextWindow) === budget}
++                                      disabled={settingsScope?.getSnapshot().writable !== true || saving}
++                                      onChange={() => { setContextBudget(model.id, budget) }}
++                                    />
++                                    <span>{formatCapacity(budget, t('row.modelUnknown'))}</span>
++                                  </label>
++                                ))}
+                               </fieldset>
+                             </div>
+                             <div className="dsm-workbuddy-model-details">
 diff --git a/src/client/locales.ts b/src/client/locales.ts
 index 504ea2c..374fd74 100644
 --- a/src/client/locales.ts
@@ -701,10 +753,10 @@ index e810864..4ee52be 100644
      supportedEfforts?: readonly string[]
      defaultEffort?: string
 diff --git a/src/upstream.ts b/src/upstream.ts
-index 662786a..bf73136 100644
+index 7adea91..c029675 100644
 --- a/src/upstream.ts
 +++ b/src/upstream.ts
-@@ -59,6 +59,7 @@ export interface WorkBuddyUpstreamModel {
+@@ -62,6 +62,7 @@ export interface WorkBuddyUpstreamModel {
     * which proved insufficiently reliable. See `catalog.ts` / `index.ts`.
     */
    multimodal?: boolean
@@ -712,7 +764,7 @@ index 662786a..bf73136 100644
    reasoning?: WorkBuddyReasoning
    descriptionZh?: string
    descriptionEn?: string
-@@ -471,12 +472,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
+@@ -519,12 +520,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
    const creditMultiplier = parseCreditMultiplier(raw['credits'])
    const reasoning = parseReasoning(raw['reasoning'])
    const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
@@ -727,7 +779,7 @@ index 662786a..bf73136 100644
      ...reasoning === undefined ? {} : { reasoning },
      ...descriptionZh === undefined ? {} : { descriptionZh },
      ...descriptionEn === undefined ? {} : { descriptionEn },
-@@ -572,15 +575,8 @@ export class WorkBuddyUpstreamClient {
+@@ -620,15 +623,8 @@ export class WorkBuddyUpstreamClient {
    }
  
    /**
@@ -745,7 +797,7 @@ index 662786a..bf73136 100644
     */
    async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
      const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
-@@ -620,7 +616,18 @@ export class WorkBuddyUpstreamClient {
+@@ -668,7 +664,18 @@ export class WorkBuddyUpstreamClient {
      const data = typeof envelope.data === 'object' && envelope.data !== null
        ? envelope.data as Record<string, unknown>
        : {}
@@ -766,15 +818,17 @@ index 662786a..bf73136 100644
  
    /** Query today's check-in status without changing account state. */
 diff --git a/src/web-status.ts b/src/web-status.ts
-index 8ea55a1..6602f50 100644
+index 8ea55a1..66fc155 100644
 --- a/src/web-status.ts
 +++ b/src/web-status.ts
-@@ -110,11 +110,12 @@ function toWebModel(
+@@ -110,11 +110,14 @@ function toWebModel(
    return {
      id: model.id,
      name: model.name,
 -    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000) : model.contextWindow,
-+    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? model.contextWindow) : model.contextWindow,
++    contextWindow: typeof budgets[model.id] === 'number' && (budgets[model.id] as number) > 0
++      ? (budgets[model.id] as number)
++      : model.contextWindow,
      nativeContextWindow: model.contextWindow,
      maxTokens: model.maxTokens,
      ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
@@ -784,7 +838,7 @@ index 8ea55a1..6602f50 100644
        reasoning: {
          ...model.reasoning.supportedEfforts === undefined ? {} : { supportedEfforts: [...model.reasoning.supportedEfforts] },
 diff --git a/tests/adapter.spec.ts b/tests/adapter.spec.ts
-index 510a330..9cfc733 100644
+index 8c6e445..1c0f121 100644
 --- a/tests/adapter.spec.ts
 +++ b/tests/adapter.spec.ts
 @@ -1,5 +1,5 @@
@@ -837,7 +891,7 @@ index 510a330..9cfc733 100644
    it('maps only upstream-advertised levels to identical wire values', () => {
      expect(workBuddyThinkingLevelMap(model({
 diff --git a/tests/catalog.spec.ts b/tests/catalog.spec.ts
-index 20af37a..9ff4bef 100644
+index 20af37a..14c517e 100644
 --- a/tests/catalog.spec.ts
 +++ b/tests/catalog.spec.ts
 @@ -9,8 +9,8 @@ const MODELS: readonly WorkBuddyModelInfo[] = [
@@ -877,14 +931,92 @@ index 20af37a..9ff4bef 100644
      )
      expect(derived.map(model => [model.id, model.contextWindow])).toEqual([
        ['glm-5.3', 200_000],
+@@ -39,6 +40,15 @@ describe('deriveCatalog', () => {
+     ])
+   })
+ 
++  it('allows explicit budget higher than native context window (e.g. 1M override for misreported models)', () => {
++    const derived = deriveCatalog(
++      [{ id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, maxTokens: 48_000 }],
++      new Set(['glm-5.1']),
++      { 'glm-5.1': 1_000_000 },
++    )
++    expect(derived[0]!.contextWindow).toBe(1_000_000)
++  })
++
+   it('ignores selections for models no longer in the directory', () => {
+     const derived = deriveCatalog(MODELS, new Set(['glm-5.3', 'retired-model']))
+     expect(derived.map(model => model.id)).toEqual(['glm-5.3'])
 diff --git a/tests/upstream.spec.ts b/tests/upstream.spec.ts
-index 6347bb0..8531e79 100644
+index c219d08..8531e79 100644
 --- a/tests/upstream.spec.ts
 +++ b/tests/upstream.spec.ts
-@@ -296,33 +296,36 @@ describe('parseUpstreamModel', () => {
+@@ -272,43 +272,6 @@ describe('parseReasoning', () => {
+     expect(parseReasoning({})).toBeUndefined()
+     expect(parseReasoning({ unsupported: 1 })).toBeUndefined()
+   })
+-
+-  // The singular `effort` spelling (issue #7): `deepseek-v4.1-flash`,
+-  // `kimi-k3` and friends declare only a default level. Both gateways accept
+-  // the whole ladder on these models and think off when no reasoning_effort
+-  // is sent, so the fold widens supportedEfforts and keeps off available.
+-  it('folds the singular effort form into the full ladder', () => {
+-    expect(parseReasoning({ effort: 'high', summary: 'auto' })).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'high',
+-      canDisableThinking: true,
+-    })
+-    expect(parseReasoning({ effort: 'medium', summary: 'auto' })).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'medium',
+-      canDisableThinking: true,
+-    })
+-  })
+-
+-  it('passes an unrecognized singular effort through as the lone level', () => {
+-    expect(parseReasoning({ effort: 'turbo', summary: 'auto' })).toEqual({
+-      supportedEfforts: ['turbo'],
+-      defaultEffort: 'turbo',
+-      canDisableThinking: true,
+-    })
+-  })
+-
+-  it('lets the plural form win when both spellings appear', () => {
+-    expect(parseReasoning({ effort: 'high', supportedEfforts: ['low', 'high'] })).toEqual({
+-      supportedEfforts: ['low', 'high'],
+-      defaultEffort: 'high',
+-    })
+-    expect(parseReasoning({ effort: 'high', canDisableThinking: false })).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'high',
+-      canDisableThinking: false,
+-    })
+-  })
+ })
+ 
+ describe('parseUpstreamModel', () => {
+@@ -333,51 +296,36 @@ describe('parseUpstreamModel', () => {
      expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
    })
  
+-  it('registers singular-effort models as reasoning-capable (issue #7)', () => {
+-    // Live /v3/config shape of `deepseek-v4.1-flash` on the global gateway:
+-    // only the singular `effort` default is declared, and without this fold
+-    // the whole reasoning object was dropped (thinking never enabled).
+-    const model = parseUpstreamModel({
+-      id: 'deepseek-v4.1-flash',
+-      name: 'Deepseek-V4.1-Flash',
+-      maxInputTokens: 1_000_000,
+-      maxOutputTokens: 128_000,
+-      reasoning: { effort: 'high', summary: 'auto' },
+-    })
+-    expect(model?.reasoning).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'high',
+-      canDisableThinking: true,
+-    })
+-  })
+-
 -  it('never infers multimodal from the upstream image flags', () => {
 -    // The upstream `supportsImages`/`disabledMultimodal` flags are not reliable,
 -    // so image input is decided by the user's explicit opt-in (imageModelIds).
