@@ -64,6 +64,26 @@ describe('workBuddyThinkingLevelMap', () => {
   it('drops unknown upstream effort spellings', () => {
     expect(workBuddyThinkingLevelMap(model({ supportedEfforts: ['unknown'] }))).toBeUndefined()
   })
+
+  it('exposes the full ladder and off for singular-effort models (issue #7)', () => {
+    // The shape parseReasoning folds `{"effort": "high"}` into: the gateways
+    // accept the whole ladder on these models and default to thinking off,
+    // so every level maps through and `off` stays available.
+    const map = workBuddyThinkingLevelMap(model({
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'high',
+      canDisableThinking: true,
+    }))
+    expect(map).toEqual({
+      minimal: null,
+      low: 'low',
+      medium: 'medium',
+      high: 'high',
+      xhigh: 'xhigh',
+      max: 'max',
+    })
+    expect(map?.off).toBeUndefined()
+  })
 })
 
 describe('createWorkBuddyAdapter provider profile', () => {

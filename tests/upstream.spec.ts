@@ -272,6 +272,43 @@ describe('parseReasoning', () => {
     expect(parseReasoning({})).toBeUndefined()
     expect(parseReasoning({ unsupported: 1 })).toBeUndefined()
   })
+
+  // The singular `effort` spelling (issue #7): `deepseek-v4.1-flash`,
+  // `kimi-k3` and friends declare only a default level. Both gateways accept
+  // the whole ladder on these models and think off when no reasoning_effort
+  // is sent, so the fold widens supportedEfforts and keeps off available.
+  it('folds the singular effort form into the full ladder', () => {
+    expect(parseReasoning({ effort: 'high', summary: 'auto' })).toEqual({
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'high',
+      canDisableThinking: true,
+    })
+    expect(parseReasoning({ effort: 'medium', summary: 'auto' })).toEqual({
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'medium',
+      canDisableThinking: true,
+    })
+  })
+
+  it('passes an unrecognized singular effort through as the lone level', () => {
+    expect(parseReasoning({ effort: 'turbo', summary: 'auto' })).toEqual({
+      supportedEfforts: ['turbo'],
+      defaultEffort: 'turbo',
+      canDisableThinking: true,
+    })
+  })
+
+  it('lets the plural form win when both spellings appear', () => {
+    expect(parseReasoning({ effort: 'high', supportedEfforts: ['low', 'high'] })).toEqual({
+      supportedEfforts: ['low', 'high'],
+      defaultEffort: 'high',
+    })
+    expect(parseReasoning({ effort: 'high', canDisableThinking: false })).toEqual({
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'high',
+      canDisableThinking: false,
+    })
+  })
 })
 
 describe('parseUpstreamModel', () => {
@@ -294,6 +331,24 @@ describe('parseUpstreamModel', () => {
       descriptionZh: '能力均衡',
     })
     expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
+  })
+
+  it('registers singular-effort models as reasoning-capable (issue #7)', () => {
+    // Live /v3/config shape of `deepseek-v4.1-flash` on the global gateway:
+    // only the singular `effort` default is declared, and without this fold
+    // the whole reasoning object was dropped (thinking never enabled).
+    const model = parseUpstreamModel({
+      id: 'deepseek-v4.1-flash',
+      name: 'Deepseek-V4.1-Flash',
+      maxInputTokens: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoning: { effort: 'high', summary: 'auto' },
+    })
+    expect(model?.reasoning).toEqual({
+      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+      defaultEffort: 'high',
+      canDisableThinking: true,
+    })
   })
 
   it('never infers multimodal from the upstream image flags', () => {
