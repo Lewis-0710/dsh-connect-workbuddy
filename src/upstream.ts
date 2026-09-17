@@ -13,6 +13,9 @@
  *   `supportsImages` 多模态、`reasoning.supportedEfforts` 推理档位、
  *   `descriptionZh/En` 描述等，这些正是模型管理卡片所需的信息，
  *   本实现将其完整解析（解析不出则留空，不虚构）。
+ *   `reasoning` 另有两种拼写：复数 `supportedEfforts` 形态与单数 `effort`
+ *   形态（只声明默认档；两网关实测这些模型接受全阶梯，不发参数即不
+ *   思考），解析层将单数形态折叠为复数（见 parseReasoning，issue #7）。
  *   另：积分接口改为按套餐名聚合，实测单个账号下同名「运营裂变包」
  *   可达 19 个，逐条渲染会淹没卡片。
  *   模型目录路径改为 `/v2/enterprises/personal/models`（原版为
@@ -438,15 +441,60 @@ export function parseCreditMultiplier(value: unknown): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
 }
 
-/** Parse the upstream's `reasoning` object; unknown shapes degrade to `{}`. */
+/**
+ * The effort vocabulary the upstream's plural-form payloads declare across both
+ * gateways (live union of every `supportedEfforts` list seen; `minimal` has
+ * never appeared). Both gateways also accept every level in it on
+ * singular-form models — medium/xhigh fold into high, low/max answer with
+ * their own budgets — so the singular `effort` value is a DEFAULT, never the
+ * model's only level.
+ */
+const SINGULAR_EFFORT_LADDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+
+/**
+ * The singular spelling of reasoning metadata: `effort` (plus the ignored
+ * `summary`) and none of the plural-form fields. Observed on CN
+ * `deepseek-v4.1-flash`/`kimi-k3-1`/`glm-5.2`… and global
+ * `deepseek-v4.1-flash`/`kimi-k3`/`gemini-3.5-flash`… (issue #7).
+ */
+function isSingularEffortForm(raw: Record<string, unknown>): boolean {
+  return typeof raw['effort'] === 'string'
+    && !Array.isArray(raw['supportedEfforts'])
+    && typeof raw['defaultEffort'] !== 'string'
+    && typeof raw['canDisableThinking'] !== 'boolean'
+}
+
+/**
+ * Fold a singular-form `effort` into the plural shape the rest of the plugin
+ * already understands. Live probes on both gateways (issue #7) show these
+ * models answer with distinct `reasoning_content` across the whole ladder —
+ * and think NOT AT ALL when no `reasoning_effort` is sent — so the fold
+ * widens `supportedEfforts` and carries the declared value into
+ * `defaultEffort`. An unrecognized `effort` value passes through as the lone
+ * level, leaving its fate to the adapter's known-level filter.
+ */
+function singularEffortLadder(raw: Record<string, unknown>): string[] | undefined {
+  const effort = typeof raw['effort'] === 'string' ? raw['effort'] : undefined
+  if (effort === undefined) return undefined
+  return (SINGULAR_EFFORT_LADDER as readonly string[]).includes(effort) ? [...SINGULAR_EFFORT_LADDER] : [effort]
+}
+
+/**
+ * Parse the upstream's `reasoning` object; unknown shapes degrade to `{}`.
+ * Both spellings normalize here: the plural form passes through as declared,
+ * and the singular `effort` form folds via {@link singularEffortLadder}.
+ */
 export function parseReasoning(value: unknown): WorkBuddyReasoning | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const raw = value as Record<string, unknown>
+  const effort = typeof raw['effort'] === 'string' ? raw['effort'] : undefined
   const supportedEfforts = Array.isArray(raw['supportedEfforts'])
-    ? raw['supportedEfforts'].filter((effort): effort is string => typeof effort === 'string')
-    : undefined
-  const defaultEffort = typeof raw['defaultEffort'] === 'string' ? raw['defaultEffort'] : undefined
-  const canDisableThinking = typeof raw['canDisableThinking'] === 'boolean' ? raw['canDisableThinking'] : undefined
+    ? raw['supportedEfforts'].filter((entry): entry is string => typeof entry === 'string')
+    : singularEffortLadder(raw)
+  const defaultEffort = typeof raw['defaultEffort'] === 'string' ? raw['defaultEffort'] : effort
+  const canDisableThinking = typeof raw['canDisableThinking'] === 'boolean'
+    ? raw['canDisableThinking']
+    : isSingularEffortForm(raw) ? true : undefined
   if (supportedEfforts === undefined && defaultEffort === undefined && canDisableThinking === undefined) {
     return undefined
   }
