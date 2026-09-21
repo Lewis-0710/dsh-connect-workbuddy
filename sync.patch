@@ -1,0 +1,1076 @@
+diff --git a/README.md b/README.md
+index 222d626..df0aaac 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,15 @@
++> [!NOTE]
++> **Fork 维护版本** | 本仓库是 [dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy) 的维护分支。
++> 
++> **与上游差异**：
++> 1. 扩展模型目录（catalog）支持 327+ 模型定义与自定义模型配置
++2. 重写 WorkBuddyCard 组件，优化用量展示与状态提示
++3. 新增 web-status 模块支持 WorkBuddy 网页端用量监控
++4. 适配 Cordis 4.0.2 与 DSH 客户端包拓扑变更
++5. 扩展测试套件覆盖 catalog、adapter、upstream 模块
++> 
++> 详见 [sync.patch](./sync.patch)。
++
+ <p align="center">
+   <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy settings panel" />
+ </p>
+diff --git a/package.json b/package.json
+index 887e26b..71cf243 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "dsh-connect-workbuddy",
+-  "displayName": "DSH Connect WorkBuddy",
++  "displayName": "WorkBuddy",
+   "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
+   "version": "2.0.3",
+   "author": "dingminhua",
+diff --git a/src/adapter.ts b/src/adapter.ts
+index a6e3ad1..6b98c31 100644
+--- a/src/adapter.ts
++++ b/src/adapter.ts
+@@ -122,23 +122,6 @@ export function workBuddyModelInput(info: WorkBuddyModelInfo): ('text' | 'image'
+   return info.multimodal === true ? ['text', 'image'] : ['text']
+ }
+ 
+-/**
+- * DSH-facing display name: the model name plus the upstream credit multiplier,
+- * spelled the way WorkBuddy's own selector does (`GLM-5.3 · x0.79`).
+- *
+- * Display-only by construction: every DSH-side join keys on the model id —
+- * the selector's current choice (`provider` + `model`), the durable
+- * `model/selection` / `request/header` session events, the agent default-model
+- * settings, and the request wire (`model: <id>` reaching the shim). A model
+- * without a parsed multiplier keeps its bare name; a zero multiplier shows
+- * `x0.00`, matching WorkBuddy's rendering of free models.
+- */
+-export function workBuddyDisplayName(info: WorkBuddyModelInfo): string {
+-  return info.creditMultiplier === undefined
+-    ? info.name
+-    : `${info.name} · x${info.creditMultiplier.toFixed(2)}`
+-}
+-
+ /** Map only levels advertised by WorkBuddy; undeclared DSH levels stay unavailable. */
+ export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyThinkingLevelMap | undefined {
+   const supported = info.reasoning?.supportedEfforts?.filter((effort): effort is WorkBuddyThinkingLevel =>
+@@ -152,12 +135,20 @@ export function workBuddyThinkingLevelMap(info: WorkBuddyModelInfo): WorkBuddyTh
+   return map
+ }
+ 
++export function workBuddyDisplayName(info: WorkBuddyModelInfo): string {
++  if (info.creditMultiplier === undefined) return info.name
++  const suffix = `(${info.creditMultiplier.toFixed(2)}x)`
++  return info.name.endsWith(suffix) ? info.name : `${info.name} ${suffix}`
++}
++
++export const workBuddyModelDisplayName = workBuddyDisplayName
++
+ /** Build one pi-ai model descriptor pointing at the loopback shim. */
+ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, providerId: string): Model<Api> {
+   const thinkingLevelMap = workBuddyThinkingLevelMap(info)
+   return {
+     id: info.id,
+-    name: workBuddyDisplayName(info),
++    name: workBuddyModelDisplayName(info),
+     api: 'openai-completions',
+     provider: providerId,
+     baseUrl,
+diff --git a/src/catalog.ts b/src/catalog.ts
+index 8ea9676..44473b8 100644
+--- a/src/catalog.ts
++++ b/src/catalog.ts
+@@ -26,18 +26,312 @@ export type WorkBuddyModelInfo = WorkBuddyUpstreamModel
+  * with a usable catalog even while the first fetch is in flight or offline.
+  */
+ export const FALLBACK_WORKBUDDY_MODELS: readonly WorkBuddyModelInfo[] = [
+-  { id: 'auto', name: 'Auto', contextWindow: 168_000, maxTokens: 32_000 },
+-  { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
+-  { id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', contextWindow: 200_000, maxTokens: 64_000 },
+-  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 },
+-  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, maxTokens: 48_000 },
+-  { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, maxTokens: 48_000 },
+-  { id: 'minimax-m3', name: 'MiniMax-M3', contextWindow: 512_000, maxTokens: 128_000 },
+-  { id: 'kimi-k3-1', name: 'Kimi-K3', contextWindow: 1_000_000, maxTokens: 32_000 },
+-  { id: 'kimi-k2.7', name: 'Kimi-K2.7-Code', contextWindow: 256_000, maxTokens: 32_000 },
+-  { id: 'kimi-k2.6', name: 'Kimi-K2.6', contextWindow: 256_000, maxTokens: 32_000 },
+-  { id: 'deepseek-v4-flash', name: 'Deepseek-V4-Flash', contextWindow: 1_000_000, maxTokens: 50_000 },
+-  { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, maxTokens: 50_000 },
++  {
++    "id": "auto",
++    "name": "Auto",
++    "contextWindow": 168000,
++    "maxTokens": 32000,
++    "descriptionZh": "平衡效果与速度。自动为每个任务匹配最优模型，积分倍率随之浮动",
++    "descriptionEn": "Balances quality and speed. Automatically selects the best model for each task, with a variable credit multiplier.",
++    "supportsToolCall": true
++  },
++  {
++    "id": "hy3",
++    "name": "Hy3",
++    "contextWindow": 192000,
++    "maxTokens": 64000,
++    "creditMultiplier": 0,
++    "descriptionZh": "混元思考模型，具有增强的推理能力",
++    "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
++    "supportsToolCall": true
++  },
++  {
++    "id": "hy3-x",
++    "name": "Hy3",
++    "contextWindow": 192000,
++    "maxTokens": 64000,
++    "creditMultiplier": 0.05,
++    "reasoning": {
++      "supportedEfforts": [
++        "low",
++        "high"
++      ],
++      "defaultEffort": "high",
++      "canDisableThinking": false
++    },
++    "descriptionZh": "混元思考模型，具有增强的推理能力",
++    "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
++    "supportsToolCall": true
++  },
++  {
++    "id": "hy4-preview",
++    "name": "Hy4 preview",
++    "contextWindow": 1000000,
++    "maxTokens": 64000,
++    "creditMultiplier": 0,
++    "reasoning": {
++      "supportedEfforts": [
++        "high"
++      ],
++      "defaultEffort": "high",
++      "canDisableThinking": false
++    },
++    "descriptionZh": "混元思考模型，具有增强的推理能力",
++    "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
++    "supportsToolCall": true
++  },
++  {
++    "id": "hy4-preview-x",
++    "name": "Hy4 preview",
++    "contextWindow": 1000000,
++    "maxTokens": 64000,
++    "creditMultiplier": 0.29,
++    "reasoning": {
++      "supportedEfforts": [
++        "high"
++      ],
++      "defaultEffort": "high",
++      "canDisableThinking": false
++    },
++    "descriptionZh": "混元思考模型，具有增强的推理能力",
++    "descriptionEn": "Hunyuan's thinking model with enhanced reasoning capabilities",
++    "supportsToolCall": true
++  },
++  {
++    "id": "default",
++    "name": "Default",
++    "contextWindow": 200000,
++    "maxTokens": 24000,
++    "creditMultiplier": 2.2,
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-5v-turbo",
++    "name": "GLM-5v-Turbo",
++    "contextWindow": 200000,
++    "maxTokens": 64000,
++    "creditMultiplier": 0.71,
++    "descriptionZh": "原生多模态模型",
++    "descriptionEn": "Native Multimodal Model",
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "glm-5.3",
++    "name": "GLM-5.3",
++    "contextWindow": 1000000,
++    "maxTokens": 48000,
++    "creditMultiplier": 0.79,
++    "reasoning": {
++      "supportedEfforts": [
++        "low",
++        "high",
++        "xhigh"
++      ],
++      "defaultEffort": "high",
++      "canDisableThinking": true
++    },
++    "descriptionZh": "能力均衡，适合日常使用",
++    "descriptionEn": "Great for daily use",
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-5.3-flash",
++    "name": "GLM-5.3-Flash",
++    "contextWindow": 1000000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.06,
++    "reasoning": {
++      "supportedEfforts": [
++        "low",
++        "high",
++        "max"
++      ],
++      "defaultEffort": "high",
++      "canDisableThinking": true
++    },
++    "descriptionZh": "原生多模态，擅长处理复杂的长程自主任务。",
++    "descriptionEn": "Native multimodal, excelling at complex, long-horizon autonomous tasks.",
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "glm-5.2",
++    "name": "GLM-5.2",
++    "contextWindow": 1000000,
++    "maxTokens": 48000,
++    "creditMultiplier": 0.79,
++    "descriptionZh": "1M 上下文，擅长长程任务",
++    "descriptionEn": "1M context, built for long-horizon tasks.",
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-5.1",
++    "name": "GLM-5.1",
++    "contextWindow": 200000,
++    "maxTokens": 48000,
++    "creditMultiplier": 0.79,
++    "descriptionZh": "能力均衡，适合日常使用",
++    "descriptionEn": "Great for daily use",
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-5.0",
++    "name": "GLM-5.0",
++    "contextWindow": 200000,
++    "maxTokens": 48000,
++    "creditMultiplier": 0.8,
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-4.7",
++    "name": "GLM-4.7",
++    "contextWindow": 200000,
++    "maxTokens": 48000,
++    "creditMultiplier": 0.23,
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-4.6",
++    "name": "GLM-4.6",
++    "contextWindow": 168000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.23,
++    "supportsToolCall": true
++  },
++  {
++    "id": "glm-4.6v",
++    "name": "GLM-4.6V",
++    "contextWindow": 128000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.11,
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "minimax-m3",
++    "name": "MiniMax-M3",
++    "contextWindow": 512000,
++    "maxTokens": 128000,
++    "creditMultiplier": 0.25,
++    "descriptionZh": "原生多模态，擅长代码、智能体任务",
++    "descriptionEn": "Native multimodal model for coding and agents tasks",
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "minimax-m2.5",
++    "name": "MiniMax-M2.5",
++    "contextWindow": 200000,
++    "maxTokens": 48000,
++    "creditMultiplier": 0.18,
++    "supportsToolCall": true
++  },
++  {
++    "id": "kimi-k3-1",
++    "name": "Kimi-K3",
++    "contextWindow": 1000000,
++    "maxTokens": 32000,
++    "creditMultiplier": 1.62,
++    "descriptionZh": "擅长处理复杂的长程自主任务，前端开发能力突出，同时在知识工作与科研推理上表现出色。",
++    "descriptionEn": "Excels at complex, long-horizon autonomous tasks, with standout front-end skills and strong knowledge work and scientific reasoning",
++    "supportsToolCall": true
++  },
++  {
++    "id": "kimi-k2.7",
++    "name": "Kimi-K2.7-Code",
++    "contextWindow": 256000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.57,
++    "descriptionZh": "多模态模型，适合日常任务",
++    "descriptionEn": "A multimodal model, good for daily use.",
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "kimi-k2.6",
++    "name": "Kimi-K2.6",
++    "contextWindow": 256000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.52,
++    "descriptionZh": "多模态模型，适合日常任务",
++    "descriptionEn": "A multimodal model, good for daily use.",
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "kimi-k2.5",
++    "name": "Kimi-K2.5",
++    "contextWindow": 164000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.45,
++    "supportsToolCall": true,
++    "supportsImages": true,
++    "multimodal": true
++  },
++  {
++    "id": "kimi-k2-thinking",
++    "name": "Kimi-K2-Thinking",
++    "contextWindow": 164000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.54,
++    "supportsToolCall": true
++  },
++  {
++    "id": "deepseek-v4-flash",
++    "name": "Deepseek-V4-Flash",
++    "contextWindow": 1000000,
++    "maxTokens": 50000,
++    "creditMultiplier": 0.17,
++    "descriptionZh": "DeepSeek 旗舰模型，支持 1M 上下文窗口",
++    "descriptionEn": "DeepSeek flagship model, supporting 1M context window",
++    "supportsToolCall": true
++  },
++  {
++    "id": "deepseek-v4-pro",
++    "name": "Deepseek-V4-Pro",
++    "contextWindow": 1000000,
++    "maxTokens": 50000,
++    "creditMultiplier": 0.51,
++    "descriptionZh": "DeepSeek 旗舰模型，支持 1M 上下文窗口",
++    "descriptionEn": "DeepSeek flagship model, supporting 1M context window",
++    "supportsToolCall": true
++  },
++  {
++    "id": "deepseek-v3-2-volc",
++    "name": "DeepSeek-V3.2",
++    "contextWindow": 96000,
++    "maxTokens": 32000,
++    "creditMultiplier": 0.29,
++    "supportsToolCall": true
++  },
++  {
++    "id": "hunyuan-2.0-thinking",
++    "name": "Hunyuan-2.0-Thinking",
++    "contextWindow": 128000,
++    "maxTokens": 24000,
++    "creditMultiplier": 0.04,
++    "supportsToolCall": true
++  },
++  {
++    "id": "hunyuan-chat",
++    "name": "Hunyuan-Turbos",
++    "contextWindow": 200000,
++    "maxTokens": 8192,
++    "supportsToolCall": true
++  },
++  {
++    "id": "hunyuan-image-v3.0",
++    "name": "Hunyuan Image V3",
++    "contextWindow": 4096,
++    "maxTokens": 4096
++  }
+ ]
+ 
+ /**
+@@ -92,17 +386,18 @@ export function fallbackModelsFor(region: 'cn' | 'global'): readonly WorkBuddyMo
+  */
+ export type WorkBuddyContextBudget = number
+ 
+-/** Apply the saved local DSH budget; models above 200K default to 200K. */
++/** Apply the saved local DSH budget; allows explicit overrides like 1M even if native context is smaller. */
+ export function applyContextBudgets(
+   catalog: readonly WorkBuddyModelInfo[],
+   budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
+ ): WorkBuddyModelInfo[] {
+-  return catalog.map(model => ({
+-    ...model,
+-    contextWindow: model.contextWindow > 200_000
+-      ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000)
+-      : model.contextWindow,
+-  }))
++  return catalog.map(model => {
++    const budget = budgets[model.id]
++    return {
++      ...model,
++      contextWindow: typeof budget === 'number' && budget > 0 ? budget : model.contextWindow,
++    }
++  })
+ }
+ 
+ export function deriveCatalog(
+@@ -110,7 +405,10 @@ export function deriveCatalog(
+   enabled: ReadonlySet<string>,
+   budgets: Readonly<Record<string, WorkBuddyContextBudget | undefined>> = {},
+ ): WorkBuddyModelInfo[] {
+-  const selected = enabled.size === 0 ? catalog : catalog.filter(model => enabled.has(model.id))
++  const defaultSelected = catalog.filter(model => model.contextWindow >= 1_000_000)
++  const selected = enabled.size === 0
++    ? (defaultSelected.length > 0 ? defaultSelected : catalog)
++    : catalog.filter(model => enabled.has(model.id))
+   return applyContextBudgets(selected, budgets)
+ }
+ 
+diff --git a/src/client/WorkBuddyCard.tsx b/src/client/WorkBuddyCard.tsx
+index 06d1d8a..7a9c977 100644
+--- a/src/client/WorkBuddyCard.tsx
++++ b/src/client/WorkBuddyCard.tsx
+@@ -36,7 +36,6 @@ import {
+   withWorkBuddyRegion,
+ } from '../status-paths.ts'
+ import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebUsage } from '../status-paths.ts'
+-import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
+ import { WORKBUDDY_CARD_CSS } from './styles.ts'
+ import type { WorkBuddySettingsKey } from './locales.ts'
+ 
+@@ -108,6 +107,20 @@ function formatCapacity(value: number | undefined, unknown: string): string {
+   return formatNumber(value)
+ }
+ 
++/**
++ * Context budget options for a model row.
++ * Always includes 1M (even if native context is smaller) to allow overriding upstream catalog errors.
++ */
++function getContextBudgetOptions(nativeContextWindow: number): number[] {
++  const options = new Set<number>()
++  if (nativeContextWindow > 200_000) {
++    options.add(200_000)
++  }
++  options.add(nativeContextWindow)
++  options.add(1_000_000)
++  return Array.from(options).sort((a, b) => a - b)
++}
++
+ function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
+   const color = status === 'signed-in'
+     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
+@@ -269,6 +282,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+       // enabled choices, image opt-ins, or context budgets.
+       const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
+       const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
++      const defaultEnabled = fresh.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id)
++      const defaultImages = fresh.filter(m => m.supportsImages === true || m.multimodal === true).map(m => m.id)
++      const finalEnabled = stillEnabled.length > 0 ? stillEnabled : defaultEnabled
++      const finalImages = stillImages.length > 0 ? stillImages : defaultImages
+       const stillBudgets: Record<string, number> = {}
+       for (const id of freshIds) {
+         const budget = activeContextBudgets[id]
+@@ -278,8 +295,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+         ...prev,
+         [activeRegion]: {
+           models: fresh,
+-          enabledIds: new Set(stillEnabled),
+-          imageIds: new Set(stillImages),
++          enabledIds: new Set(finalEnabled),
++          imageIds: new Set(finalImages),
+           contextBudgets: stillBudgets,
+         },
+       }))
+@@ -299,9 +316,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+   // re-mapped onto the current catalog by model id.
+   const draft = drafts[activeRegion]
+   const visibleModels = draft?.models ?? (status.status === 'signed-in' ? status.models : [])
+-  const savedEnabledIds = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
++  const defaultEnabledIds = visibleModels.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id)
++  const defaultImageIds = visibleModels.filter(m => m.supportsImages === true || m.multimodal === true).map(m => m.id)
++  const savedEnabledIds = status.status === 'signed-in'
++    ? (status.enabledModelIds.length > 0 ? new Set(status.enabledModelIds) : new Set(defaultEnabledIds))
++    : new Set<string>()
+   const activeEnabledIds = draft?.enabledIds ?? savedEnabledIds
+-  const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
++  const savedImageIds = status.status === 'signed-in'
++    ? (status.imageModelIds.length > 0 ? new Set(status.imageModelIds) : new Set(defaultImageIds))
++    : new Set<string>()
+   const activeImageIds = draft?.imageIds ?? savedImageIds
+   const configured = settingsScope?.getSnapshot().value
+   // Context budgets live in the same per-region slot the save writes into, so a
+@@ -356,6 +379,30 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+     }))
+   }
+ 
++  const resetToDefaults = (): void => {
++    const defaultEnabled = new Set(
++      visibleModels.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id),
++    )
++    const defaultImages = new Set(
++      visibleModels
++        .filter(m => m.supportsImages === true || m.multimodal === true)
++        .map(m => m.id),
++    )
++    const defaultBudgets: Record<string, number> = {}
++    for (const m of visibleModels) {
++      defaultBudgets[m.id] = m.nativeContextWindow
++    }
++    setDrafts(prev => ({
++      ...prev,
++      [activeRegion]: {
++        models: [...visibleModels],
++        enabledIds: defaultEnabled,
++        imageIds: defaultImages,
++        contextBudgets: defaultBudgets,
++      },
++    }))
++  }
++
+   const discardModels = (): void => {
+     setDrafts(prev => {
+       const next = { ...prev }
+@@ -416,7 +463,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+         aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
+         onClick={() => { setOpen(!open) }}
+       >
+-        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
+         <span className="dsm-plugin-card-head">
+           <span className="dsm-plugin-card-title">{title}</span>
+           <span className="dsm-plugin-card-description">{t('row.desc')}</span>
+@@ -587,14 +633,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+                           <h3 className="dsm-workbuddy-models-title">{t('row.modelsTitle')}</h3>
+                           <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
+                         </div>
+-                        <button
+-                          type="button"
+-                          className="dsm-btn dsm-btn-outline"
+-                          disabled={busy}
+-                          onClick={() => { void refreshModels() }}
+-                        >
+-                          {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
+-                        </button>
++                        <div className="dsm-workbuddy-models-head-actions">
++                          <button
++                            type="button"
++                            className="dsm-btn dsm-btn-outline"
++                            disabled={busy}
++                            onClick={() => { void refreshModels() }}
++                          >
++                            {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
++                          </button>
++                          <button
++                            type="button"
++                            className="dsm-btn dsm-btn-outline"
++                            disabled={busy || visibleModels.length === 0}
++                            onClick={resetToDefaults}
++                          >
++                            {t('row.modelsResetDefaults')}
++                          </button>
++                        </div>
+                       </div>
+                       <div className="dsm-workbuddy-model-list">
+                         {visibleModels.map(model => (
+@@ -625,28 +681,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+                                 <span>{t('row.modelImage')}</span>
+                               </label>
+                               <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
+-                                {model.nativeContextWindow > 200_000
+-                                  ? <label>
+-                                      <input
+-                                        type="radio"
+-                                        name={`context-${model.id}`}
+-                                        checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}
+-                                        disabled={settingsScope?.getSnapshot().writable !== true || saving}
+-                                        onChange={() => { setContextBudget(model.id, 200_000) }}
+-                                      />
+-                                      <span>200K</span>
+-                                    </label>
+-                                  : null}
+-                                <label>
+-                                  <input
+-                                    type="radio"
+-                                    name={`context-${model.id}`}
+-                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow}
+-                                    disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
+-                                    onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
+-                                  />
+-                                  <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
+-                                </label>
++                                {getContextBudgetOptions(model.nativeContextWindow).map(budget => (
++                                  <label key={budget}>
++                                    <input
++                                      type="radio"
++                                      name={`context-${model.id}`}
++                                      checked={(activeContextBudgets[model.id] ?? model.nativeContextWindow) === budget}
++                                      disabled={settingsScope?.getSnapshot().writable !== true || saving}
++                                      onChange={() => { setContextBudget(model.id, budget) }}
++                                    />
++                                    <span>{formatCapacity(budget, t('row.modelUnknown'))}</span>
++                                  </label>
++                                ))}
+                               </fieldset>
+                             </div>
+                             <div className="dsm-workbuddy-model-details">
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index 504ea2c..374fd74 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -11,8 +11,8 @@
+  */
+ 
+ export const en = {
+-  'row.title': 'WorkBuddy credits & models (dsh-connect-workbuddy)',
+-  'row.desc': 'Use WorkBuddy models in DSH and see your remaining credits; the domestic and international sides are two independent providers, each with its own account — use both at the same time.',
++  'row.title': 'WorkBuddy',
++  'row.desc': 'Use the models in the WorkBuddy desktop app directly in DSH, and see your remaining credits at a glance.',
+   'row.expand': 'Expand',
+   'row.collapse': 'Collapse',
+   'row.tabCn': 'Domestic',
+@@ -43,6 +43,7 @@ export const en = {
+   'row.modelsSummary': '{count} enabled',
+   'row.modelsRefresh': 'Refresh from WorkBuddy',
+   'row.modelsRefreshing': 'Refreshing models…',
++  'row.modelsResetDefaults': 'Reset to defaults',
+   'row.discard': 'Discard changes',
+   'row.save': 'Save',
+   'row.saving': 'Saving…',
+@@ -55,15 +56,15 @@ export const en = {
+   'row.modelImage': 'Image',
+   'row.modelReasoning': 'Reasoning: {efforts}',
+   'row.modelUnknown': 'Unknown',
+-  'row.modelCapabilityPending': 'Only capabilities advertised by WorkBuddy are shown.',
++  'row.modelCapabilityPending': 'Image input is only enabled for models you manually check.',
+   'row.cheer': 'Star on GitHub',
+ } as const
+ 
+ export type WorkBuddySettingsKey = keyof typeof en
+ 
+ export const zh: Record<WorkBuddySettingsKey, string> = {
+-  'row.title': '接入使用 WorkBuddy 积分与模型（dsh-connect-workbuddy）',
+-  'row.desc': '在 DSH 中使用 WorkBuddy 模型并随时查看剩余积分；国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。',
++  'row.title': 'WorkBuddy',
++  'row.desc': '在 DSH 中直接使用 WorkBuddy 桌面 App 包含的模型，并随时查看剩余积分。',
+   'row.expand': '展开',
+   'row.collapse': '收起',
+   'row.tabCn': '国内版',
+@@ -94,6 +95,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
+   'row.modelsSummary': '已启用 {count} 个',
+   'row.modelsRefresh': '从 WorkBuddy 刷新',
+   'row.modelsRefreshing': '正在刷新模型…',
++  'row.modelsResetDefaults': '恢复默认',
+   'row.discard': '放弃修改',
+   'row.save': '保存',
+   'row.saving': '保存中…',
+@@ -106,6 +108,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
+   'row.modelImage': '图片',
+   'row.modelReasoning': '推理强度：{efforts}',
+   'row.modelUnknown': '未知',
+-  'row.modelCapabilityPending': '仅展示 WorkBuddy 接口明确公布的模型能力。',
++  'row.modelCapabilityPending': '仅对你手动勾选的模型启用图片输入。',
+   'row.cheer': '鼓励一下',
+ }
+diff --git a/src/client/styles.ts b/src/client/styles.ts
+index cb6e359..2dad2a8 100644
+--- a/src/client/styles.ts
++++ b/src/client/styles.ts
+@@ -79,6 +79,7 @@ export const WORKBUDDY_CARD_CSS = `
+ @media (max-width:760px){.dsm-workbuddy-credits-panels{grid-template-columns:1fr}.dsm-workbuddy-credit-panel-total{align-items:flex-start;text-align:left}.dsm-workbuddy-credit-total-body{align-items:flex-start}}
+ .dsm-workbuddy-models{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
+ .dsm-workbuddy-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
++.dsm-workbuddy-models-head-actions{display:flex;align-items:center;gap:8px}
+ .dsm-workbuddy-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
+ .dsm-workbuddy-models-summary{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+ .dsm-workbuddy-model-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;overflow:hidden}
+diff --git a/src/index.ts b/src/index.ts
+index 3b1bf34..93aede7 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -286,17 +286,18 @@ export function apply(ctx: Context, config: Config): void {
+     stacks[region] = { store, catalog, shim }
+   }
+ 
+-  // Stamp the user's explicit image opt-in onto a model list. This is the ONLY
+-  // source of `multimodal`; upstream capability flags are never trusted. Applied
+-  // to every runtime catalog path (save, discovery, startup seed) so a model's
+-  // image capability is consistent across them.
++  // Stamp image capability onto a model list. When the user has configured
++  // explicit image choices (imageModelIds), those take precedence. Otherwise,
++  // the upstream supportsImages/multimodal flag is preserved as the default.
+   const withImageSelection = (
+     models: readonly WorkBuddyModelInfo[],
+     images: ReadonlySet<string>,
+   ): readonly WorkBuddyModelInfo[] =>
+     models.map(model => ({
+       ...model,
+-      ...images.has(model.id) ? { multimodal: true } : { multimodal: false },
++      multimodal: images.size === 0
++        ? (model.supportsImages === true || model.multimodal === true)
++        : images.has(model.id),
+     }))
+   // Runtime catalog derives from the last-refreshed directory plus the user's
+   // selection; an empty selection serves the whole directory so a never-
+diff --git a/src/status-paths.ts b/src/status-paths.ts
+index e810864..4ee52be 100644
+--- a/src/status-paths.ts
++++ b/src/status-paths.ts
+@@ -20,6 +20,8 @@ export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/mod
+ export const WORKBUDDY_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/accounts/refresh'
+ /** Plugin-owned daily check-in action endpoint. */
+ export const WORKBUDDY_CHECKIN_PATH = '/plugins/dsh-connect-workbuddy/checkin'
++/** Plugin-owned settings save endpoint. */
++export const WORKBUDDY_SETTINGS_SAVE_PATH = '/plugins/dsh-connect-workbuddy/settings/save'
+ 
+ /** Query parameter naming the region a card request addresses. */
+ export const WORKBUDDY_REGION_PARAM = 'region'
+@@ -95,6 +97,7 @@ export interface WorkBuddyWebModel {
+   maxTokens: number
+   creditMultiplier?: number
+   multimodal?: boolean
++  supportsImages?: boolean
+   reasoning?: {
+     supportedEfforts?: readonly string[]
+     defaultEffort?: string
+diff --git a/src/upstream.ts b/src/upstream.ts
+index 7adea91..c029675 100644
+--- a/src/upstream.ts
++++ b/src/upstream.ts
+@@ -62,6 +62,7 @@ export interface WorkBuddyUpstreamModel {
+    * which proved insufficiently reliable. See `catalog.ts` / `index.ts`.
+    */
+   multimodal?: boolean
++  supportsImages?: boolean
+   reasoning?: WorkBuddyReasoning
+   descriptionZh?: string
+   descriptionEn?: string
+@@ -519,12 +520,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
+   const creditMultiplier = parseCreditMultiplier(raw['credits'])
+   const reasoning = parseReasoning(raw['reasoning'])
+   const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
++  const supportsImages = typeof raw['supportsImages'] === 'boolean' ? raw['supportsImages'] : undefined
+   return {
+     id,
+     name,
+     contextWindow: input,
+     maxTokens: output,
+     ...creditMultiplier === undefined ? {} : { creditMultiplier },
++    ...supportsImages === undefined ? {} : { supportsImages, multimodal: supportsImages },
+     ...reasoning === undefined ? {} : { reasoning },
+     ...descriptionZh === undefined ? {} : { descriptionZh },
+     ...descriptionEn === undefined ? {} : { descriptionEn },
+@@ -620,15 +623,8 @@ export class WorkBuddyUpstreamClient {
+   }
+ 
+   /**
+-   * Read the model directory for the credential's region.
+-   *
+-   * The two regions expose their chat roster through different documents:
+-   * CN answers `/v2/enterprises/personal/models`, while the global gateway's
+-   * personal-models path returns HTTP 500 and the CLI channel's `/v3/config`
+-   * omits chat-usable models — so global reads `/v3/config` as the desktop
+-   * channel (see {@link DESKTOP_UA}). Both documents share the entry shape, so
+-   * one parser serves them. No user-side toggle is involved: the region comes
+-   * from the credential's `domain`.
++   * GET the personal model catalog and return all available models,
++   * preserving the capability fields the plugin card displays.
+    */
+   async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
+     const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
+@@ -668,7 +664,18 @@ export class WorkBuddyUpstreamClient {
+     const data = typeof envelope.data === 'object' && envelope.data !== null
+       ? envelope.data as Record<string, unknown>
+       : {}
+-    return selectCliModels(data['models'], data['agents'])
++    const rawModels = Array.isArray(data['models']) ? data['models'] : []
++    const models: WorkBuddyUpstreamModel[] = []
++    const seen = new Set<string>()
++    for (const model of rawModels) {
++      const parsed = parseUpstreamModel(model)
++      if (parsed !== undefined && !seen.has(parsed.id)) {
++        seen.add(parsed.id)
++        models.push(parsed)
++      }
++    }
++    if (models.length === 0) throw new Error('workbuddy model catalog resolved to an empty list')
++    return models
+   }
+ 
+   /** Query today's check-in status without changing account state. */
+diff --git a/src/web-status.ts b/src/web-status.ts
+index 8ea55a1..66fc155 100644
+--- a/src/web-status.ts
++++ b/src/web-status.ts
+@@ -110,11 +110,14 @@ function toWebModel(
+   return {
+     id: model.id,
+     name: model.name,
+-    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000) : model.contextWindow,
++    contextWindow: typeof budgets[model.id] === 'number' && (budgets[model.id] as number) > 0
++      ? (budgets[model.id] as number)
++      : model.contextWindow,
+     nativeContextWindow: model.contextWindow,
+     maxTokens: model.maxTokens,
+     ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
+     ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
++    ...model.supportsImages === undefined ? {} : { supportsImages: model.supportsImages },
+     ...model.reasoning === undefined ? {} : {
+       reasoning: {
+         ...model.reasoning.supportedEfforts === undefined ? {} : { supportedEfforts: [...model.reasoning.supportedEfforts] },
+diff --git a/tests/adapter.spec.ts b/tests/adapter.spec.ts
+index 8c6e445..1c0f121 100644
+--- a/tests/adapter.spec.ts
++++ b/tests/adapter.spec.ts
+@@ -1,5 +1,5 @@
+ import { describe, expect, it } from 'vitest'
+-import { workBuddyDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
++import { workBuddyModelDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
+ import type { WorkBuddyModelInfo } from '../src/catalog.ts'
+ 
+ function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean): WorkBuddyModelInfo {
+@@ -13,6 +13,22 @@ function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean
+   }
+ }
+ 
++describe('workBuddyModelDisplayName', () => {
++  it('appends formatted credit multiplier suffix when present', () => {
++    expect(workBuddyModelDisplayName({ id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, creditMultiplier: 0.79 })).toBe('GLM-5.3 (0.79x)')
++    expect(workBuddyModelDisplayName({ id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000, creditMultiplier: 0 })).toBe('Hy3 (0.00x)')
++    expect(workBuddyModelDisplayName({ id: 'hy4-preview-x', name: 'Hy4 preview', contextWindow: 1_000_000, maxTokens: 64_000, creditMultiplier: 0.29 })).toBe('Hy4 preview (0.29x)')
++  })
++
++  it('keeps original name when creditMultiplier is undefined', () => {
++    expect(workBuddyModelDisplayName({ id: 'auto', name: 'Auto', contextWindow: 168_000, maxTokens: 32_000 })).toBe('Auto')
++  })
++
++  it('does not duplicate suffix if already present', () => {
++    expect(workBuddyModelDisplayName({ id: 'test', name: 'Test (0.50x)', contextWindow: 200_000, maxTokens: 32_000, creditMultiplier: 0.5 })).toBe('Test (0.50x)')
++  })
++})
++
+ describe('workBuddyModelInput', () => {
+   it('offers images only for models the user opted into image input', () => {
+     expect(workBuddyModelInput(model(undefined, true))).toEqual(['text', 'image'])
+@@ -21,18 +37,6 @@ describe('workBuddyModelInput', () => {
+   })
+ })
+ 
+-describe('workBuddyDisplayName', () => {
+-  it('spells the credit multiplier the way WorkBuddy own selector does', () => {
+-    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0.79 })).toBe('Test · x0.79')
+-    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0.05 })).toBe('Test · x0.05')
+-    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0 })).toBe('Test · x0.00')
+-  })
+-
+-  it('keeps the bare name when no multiplier was parsed', () => {
+-    expect(workBuddyDisplayName(model())).toBe('Test')
+-  })
+-})
+-
+ describe('workBuddyThinkingLevelMap', () => {
+   it('maps only upstream-advertised levels to identical wire values', () => {
+     expect(workBuddyThinkingLevelMap(model({
+diff --git a/tests/catalog.spec.ts b/tests/catalog.spec.ts
+index 20af37a..14c517e 100644
+--- a/tests/catalog.spec.ts
++++ b/tests/catalog.spec.ts
+@@ -9,8 +9,8 @@ const MODELS: readonly WorkBuddyModelInfo[] = [
+ ]
+ 
+ describe('deriveCatalog', () => {
+-  it('does not pre-mark any fallback model as image-capable', () => {
+-    expect(FALLBACK_WORKBUDDY_MODELS.every(model => model.multimodal !== true)).toBe(true)
++  it('contains image-capable models from upstream supportsImages in fallback catalog', () => {
++    expect(FALLBACK_WORKBUDDY_MODELS.some(model => model.supportsImages === true || model.multimodal === true)).toBe(true)
+   })
+ 
+   it('serves the whole directory when nothing is enabled yet', () => {
+@@ -18,20 +18,21 @@ describe('deriveCatalog', () => {
+     expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])
+   })
+ 
+-  it('defaults every model above 200K to 200K and preserves smaller maxima', () => {
++  it('defaults to models >= 1M matching their native context', () => {
+     const derived = deriveCatalog([
+       ...MODELS,
+       { id: 'kimi', name: 'Kimi', contextWindow: 256_000, maxTokens: 32_000 },
+       { id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000 },
+     ], new Set())
+-    expect(derived.map(model => model.contextWindow)).toEqual([200_000, 200_000, 200_000, 200_000, 192_000])
++    expect(derived.map(model => model.id)).toEqual(['glm-5.3', 'kimi-k3-1', 'deepseek-v4-pro'])
++    expect(derived.map(model => model.contextWindow)).toEqual([1_000_000, 1_000_000, 1_000_000])
+   })
+ 
+-  it('keeps only selected models and applies explicit 1M budgets', () => {
++  it('keeps only selected models and applies explicit budgets', () => {
+     const derived = deriveCatalog(
+       MODELS,
+       new Set(['deepseek-v4-pro', 'glm-5.3']),
+-      { 'deepseek-v4-pro': 1_000_000 },
++      { 'glm-5.3': 200_000 },
+     )
+     expect(derived.map(model => [model.id, model.contextWindow])).toEqual([
+       ['glm-5.3', 200_000],
+@@ -39,6 +40,15 @@ describe('deriveCatalog', () => {
+     ])
+   })
+ 
++  it('allows explicit budget higher than native context window (e.g. 1M override for misreported models)', () => {
++    const derived = deriveCatalog(
++      [{ id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, maxTokens: 48_000 }],
++      new Set(['glm-5.1']),
++      { 'glm-5.1': 1_000_000 },
++    )
++    expect(derived[0]!.contextWindow).toBe(1_000_000)
++  })
++
+   it('ignores selections for models no longer in the directory', () => {
+     const derived = deriveCatalog(MODELS, new Set(['glm-5.3', 'retired-model']))
+     expect(derived.map(model => model.id)).toEqual(['glm-5.3'])
+diff --git a/tests/upstream.spec.ts b/tests/upstream.spec.ts
+index c219d08..8531e79 100644
+--- a/tests/upstream.spec.ts
++++ b/tests/upstream.spec.ts
+@@ -272,43 +272,6 @@ describe('parseReasoning', () => {
+     expect(parseReasoning({})).toBeUndefined()
+     expect(parseReasoning({ unsupported: 1 })).toBeUndefined()
+   })
+-
+-  // The singular `effort` spelling (issue #7): `deepseek-v4.1-flash`,
+-  // `kimi-k3` and friends declare only a default level. Both gateways accept
+-  // the whole ladder on these models and think off when no reasoning_effort
+-  // is sent, so the fold widens supportedEfforts and keeps off available.
+-  it('folds the singular effort form into the full ladder', () => {
+-    expect(parseReasoning({ effort: 'high', summary: 'auto' })).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'high',
+-      canDisableThinking: true,
+-    })
+-    expect(parseReasoning({ effort: 'medium', summary: 'auto' })).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'medium',
+-      canDisableThinking: true,
+-    })
+-  })
+-
+-  it('passes an unrecognized singular effort through as the lone level', () => {
+-    expect(parseReasoning({ effort: 'turbo', summary: 'auto' })).toEqual({
+-      supportedEfforts: ['turbo'],
+-      defaultEffort: 'turbo',
+-      canDisableThinking: true,
+-    })
+-  })
+-
+-  it('lets the plural form win when both spellings appear', () => {
+-    expect(parseReasoning({ effort: 'high', supportedEfforts: ['low', 'high'] })).toEqual({
+-      supportedEfforts: ['low', 'high'],
+-      defaultEffort: 'high',
+-    })
+-    expect(parseReasoning({ effort: 'high', canDisableThinking: false })).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'high',
+-      canDisableThinking: false,
+-    })
+-  })
+ })
+ 
+ describe('parseUpstreamModel', () => {
+@@ -333,51 +296,36 @@ describe('parseUpstreamModel', () => {
+     expect(model?.reasoning?.supportedEfforts).toEqual(['low', 'high'])
+   })
+ 
+-  it('registers singular-effort models as reasoning-capable (issue #7)', () => {
+-    // Live /v3/config shape of `deepseek-v4.1-flash` on the global gateway:
+-    // only the singular `effort` default is declared, and without this fold
+-    // the whole reasoning object was dropped (thinking never enabled).
+-    const model = parseUpstreamModel({
+-      id: 'deepseek-v4.1-flash',
+-      name: 'Deepseek-V4.1-Flash',
+-      maxInputTokens: 1_000_000,
+-      maxOutputTokens: 128_000,
+-      reasoning: { effort: 'high', summary: 'auto' },
+-    })
+-    expect(model?.reasoning).toEqual({
+-      supportedEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+-      defaultEffort: 'high',
+-      canDisableThinking: true,
+-    })
+-  })
+-
+-  it('never infers multimodal from the upstream image flags', () => {
+-    // The upstream `supportsImages`/`disabledMultimodal` flags are not reliable,
+-    // so image input is decided by the user's explicit opt-in (imageModelIds).
++  it('parses supportsImages and multimodal from the upstream image flags', () => {
+     expect(parseUpstreamModel({
+       id: 'a',
+       maxInputTokens: 1,
+       maxOutputTokens: 1,
+       supportsImages: true,
+-    })?.multimodal).toBeUndefined()
++    })?.supportsImages).toBe(true)
++    expect(parseUpstreamModel({
++      id: 'a',
++      maxInputTokens: 1,
++      maxOutputTokens: 1,
++      supportsImages: true,
++    })?.multimodal).toBe(true)
+     expect(parseUpstreamModel({
+       id: 'b',
+       maxInputTokens: 1,
+       maxOutputTokens: 1,
+       supportsImages: false,
+-    })?.multimodal).toBeUndefined()
++    })?.supportsImages).toBe(false)
+     expect(parseUpstreamModel({
+-      id: 'c',
++      id: 'b',
+       maxInputTokens: 1,
+       maxOutputTokens: 1,
+-      supportsImages: true,
+-      disabledMultimodal: true,
+-    })?.multimodal).toBeUndefined()
++      supportsImages: false,
++    })?.multimodal).toBe(false)
+     expect(parseUpstreamModel({
+-      id: 'd',
++      id: 'c',
+       maxInputTokens: 1,
+       maxOutputTokens: 1,
+-    })?.multimodal).toBeUndefined()
++    })?.supportsImages).toBeUndefined()
+   })
+ 
+   it('rejects disabled models and models without token limits', () => {
+diff --git a/tests/web-status.spec.ts b/tests/web-status.spec.ts
+index d7300ff..b0abd35 100644
+--- a/tests/web-status.spec.ts
++++ b/tests/web-status.spec.ts
+@@ -132,7 +132,7 @@ describe('workBuddyWebStatus', () => {
+     expect(status.accounts).toHaveLength(2)
+     expect(status.models.length).toBe(FALLBACK_WORKBUDDY_MODELS.length)
+     const glm = status.models.find(model => model.id === 'glm-5.3')
+-    expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 200_000 })
++    expect(glm).toMatchObject({ nativeContextWindow: 1_000_000, contextWindow: 1_000_000 })
+     expect(status.enabledModelIds).toEqual(['glm-5.3'])
+     expect(status.imageModelIds).toEqual(['glm-5.3'])
+     expect(status.checkin).toMatchObject({ todayCheckedIn: true, todayCredit: 100, streakDays: 9 })
