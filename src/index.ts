@@ -286,17 +286,18 @@ export function apply(ctx: Context, config: Config): void {
     stacks[region] = { store, catalog, shim }
   }
 
-  // Stamp the user's explicit image opt-in onto a model list. This is the ONLY
-  // source of `multimodal`; upstream capability flags are never trusted. Applied
-  // to every runtime catalog path (save, discovery, startup seed) so a model's
-  // image capability is consistent across them.
+  // Stamp image capability onto a model list. When the user has configured
+  // explicit image choices (imageModelIds), those take precedence. Otherwise,
+  // the upstream supportsImages/multimodal flag is preserved as the default.
   const withImageSelection = (
     models: readonly WorkBuddyModelInfo[],
     images: ReadonlySet<string>,
   ): readonly WorkBuddyModelInfo[] =>
     models.map(model => ({
       ...model,
-      ...images.has(model.id) ? { multimodal: true } : { multimodal: false },
+      multimodal: images.size === 0
+        ? (model.supportsImages === true || model.multimodal === true)
+        : images.has(model.id),
     }))
   // Runtime catalog derives from the last-refreshed directory plus the user's
   // selection; an empty selection serves the whole directory so a never-

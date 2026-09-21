@@ -62,6 +62,7 @@ export interface WorkBuddyUpstreamModel {
    * which proved insufficiently reliable. See `catalog.ts` / `index.ts`.
    */
   multimodal?: boolean
+  supportsImages?: boolean
   reasoning?: WorkBuddyReasoning
   descriptionZh?: string
   descriptionEn?: string
@@ -519,12 +520,14 @@ export function parseUpstreamModel(value: unknown): WorkBuddyUpstreamModel | und
   const creditMultiplier = parseCreditMultiplier(raw['credits'])
   const reasoning = parseReasoning(raw['reasoning'])
   const supportsToolCall = typeof raw['supportsToolCall'] === 'boolean' ? raw['supportsToolCall'] : undefined
+  const supportsImages = typeof raw['supportsImages'] === 'boolean' ? raw['supportsImages'] : undefined
   return {
     id,
     name,
     contextWindow: input,
     maxTokens: output,
     ...creditMultiplier === undefined ? {} : { creditMultiplier },
+    ...supportsImages === undefined ? {} : { supportsImages, multimodal: supportsImages },
     ...reasoning === undefined ? {} : { reasoning },
     ...descriptionZh === undefined ? {} : { descriptionZh },
     ...descriptionEn === undefined ? {} : { descriptionEn },
@@ -620,15 +623,8 @@ export class WorkBuddyUpstreamClient {
   }
 
   /**
-   * Read the model directory for the credential's region.
-   *
-   * The two regions expose their chat roster through different documents:
-   * CN answers `/v2/enterprises/personal/models`, while the global gateway's
-   * personal-models path returns HTTP 500 and the CLI channel's `/v3/config`
-   * omits chat-usable models — so global reads `/v3/config` as the desktop
-   * channel (see {@link DESKTOP_UA}). Both documents share the entry shape, so
-   * one parser serves them. No user-side toggle is involved: the region comes
-   * from the credential's `domain`.
+   * GET the personal model catalog and return all available models,
+   * preserving the capability fields the plugin card displays.
    */
   async fetchModels(credential: WorkBuddyCredential, signal?: AbortSignal): Promise<readonly WorkBuddyUpstreamModel[]> {
     const timeout = signal ?? AbortSignal.timeout(JSON_TIMEOUT_MS)
@@ -668,7 +664,18 @@ export class WorkBuddyUpstreamClient {
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
-    return selectCliModels(data['models'], data['agents'])
+    const rawModels = Array.isArray(data['models']) ? data['models'] : []
+    const models: WorkBuddyUpstreamModel[] = []
+    const seen = new Set<string>()
+    for (const model of rawModels) {
+      const parsed = parseUpstreamModel(model)
+      if (parsed !== undefined && !seen.has(parsed.id)) {
+        seen.add(parsed.id)
+        models.push(parsed)
+      }
+    }
+    if (models.length === 0) throw new Error('workbuddy model catalog resolved to an empty list')
+    return models
   }
 
   /** Query today's check-in status without changing account state. */

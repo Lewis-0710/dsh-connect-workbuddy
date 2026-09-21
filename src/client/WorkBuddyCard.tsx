@@ -36,7 +36,6 @@ import {
   withWorkBuddyRegion,
 } from '../status-paths.ts'
 import type { WorkBuddyWebModel, WorkBuddyWebRegion, WorkBuddyWebUsage } from '../status-paths.ts'
-import { WORKBUDDY_PLUGIN_ICON } from './icon.ts'
 import { WORKBUDDY_CARD_CSS } from './styles.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -106,6 +105,20 @@ function formatCapacity(value: number | undefined, unknown: string): string {
   if (value >= 1_000_000 && value % 1_000_000 === 0) return `${value / 1_000_000}M`
   if (value >= 1_000 && value % 1_000 === 0) return `${value / 1_000}K`
   return formatNumber(value)
+}
+
+/**
+ * Context budget options for a model row.
+ * Always includes 1M (even if native context is smaller) to allow overriding upstream catalog errors.
+ */
+function getContextBudgetOptions(nativeContextWindow: number): number[] {
+  const options = new Set<number>()
+  if (nativeContextWindow > 200_000) {
+    options.add(200_000)
+  }
+  options.add(nativeContextWindow)
+  options.add(1_000_000)
+  return Array.from(options).sort((a, b) => a - b)
 }
 
 function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
@@ -269,6 +282,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
       // enabled choices, image opt-ins, or context budgets.
       const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
       const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
+      const defaultEnabled = fresh.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id)
+      const defaultImages = fresh.filter(m => m.supportsImages === true || m.multimodal === true).map(m => m.id)
+      const finalEnabled = stillEnabled.length > 0 ? stillEnabled : defaultEnabled
+      const finalImages = stillImages.length > 0 ? stillImages : defaultImages
       const stillBudgets: Record<string, number> = {}
       for (const id of freshIds) {
         const budget = activeContextBudgets[id]
@@ -278,8 +295,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
         ...prev,
         [activeRegion]: {
           models: fresh,
-          enabledIds: new Set(stillEnabled),
-          imageIds: new Set(stillImages),
+          enabledIds: new Set(finalEnabled),
+          imageIds: new Set(finalImages),
           contextBudgets: stillBudgets,
         },
       }))
@@ -299,9 +316,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
   // re-mapped onto the current catalog by model id.
   const draft = drafts[activeRegion]
   const visibleModels = draft?.models ?? (status.status === 'signed-in' ? status.models : [])
-  const savedEnabledIds = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
+  const defaultEnabledIds = visibleModels.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id)
+  const defaultImageIds = visibleModels.filter(m => m.supportsImages === true || m.multimodal === true).map(m => m.id)
+  const savedEnabledIds = status.status === 'signed-in'
+    ? (status.enabledModelIds.length > 0 ? new Set(status.enabledModelIds) : new Set(defaultEnabledIds))
+    : new Set<string>()
   const activeEnabledIds = draft?.enabledIds ?? savedEnabledIds
-  const savedImageIds = status.status === 'signed-in' ? new Set(status.imageModelIds) : new Set<string>()
+  const savedImageIds = status.status === 'signed-in'
+    ? (status.imageModelIds.length > 0 ? new Set(status.imageModelIds) : new Set(defaultImageIds))
+    : new Set<string>()
   const activeImageIds = draft?.imageIds ?? savedImageIds
   const configured = settingsScope?.getSnapshot().value
   // Context budgets live in the same per-region slot the save writes into, so a
@@ -353,6 +376,30 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     editDraft(current => ({
       ...current,
       contextBudgets: { ...current.contextBudgets, [modelId]: budget },
+    }))
+  }
+
+  const resetToDefaults = (): void => {
+    const defaultEnabled = new Set(
+      visibleModels.filter(m => m.nativeContextWindow >= 1_000_000).map(m => m.id),
+    )
+    const defaultImages = new Set(
+      visibleModels
+        .filter(m => m.supportsImages === true || m.multimodal === true)
+        .map(m => m.id),
+    )
+    const defaultBudgets: Record<string, number> = {}
+    for (const m of visibleModels) {
+      defaultBudgets[m.id] = m.nativeContextWindow
+    }
+    setDrafts(prev => ({
+      ...prev,
+      [activeRegion]: {
+        models: [...visibleModels],
+        enabledIds: defaultEnabled,
+        imageIds: defaultImages,
+        contextBudgets: defaultBudgets,
+      },
     }))
   }
 
@@ -416,7 +463,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
         aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
         onClick={() => { setOpen(!open) }}
       >
-        <img className="dsm-plugin-card-icon" src={WORKBUDDY_PLUGIN_ICON} alt="" />
         <span className="dsm-plugin-card-head">
           <span className="dsm-plugin-card-title">{title}</span>
           <span className="dsm-plugin-card-description">{t('row.desc')}</span>
@@ -587,14 +633,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                           <h3 className="dsm-workbuddy-models-title">{t('row.modelsTitle')}</h3>
                           <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                         </div>
-                        <button
-                          type="button"
-                          className="dsm-btn dsm-btn-outline"
-                          disabled={busy}
-                          onClick={() => { void refreshModels() }}
-                        >
-                          {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
-                        </button>
+                        <div className="dsm-workbuddy-models-head-actions">
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy}
+                            onClick={() => { void refreshModels() }}
+                          >
+                            {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
+                          </button>
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy || visibleModels.length === 0}
+                            onClick={resetToDefaults}
+                          >
+                            {t('row.modelsResetDefaults')}
+                          </button>
+                        </div>
                       </div>
                       <div className="dsm-workbuddy-model-list">
                         {visibleModels.map(model => (
@@ -625,28 +681,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                 <span>{t('row.modelImage')}</span>
                               </label>
                               <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
-                                {model.nativeContextWindow > 200_000
-                                  ? <label>
-                                      <input
-                                        type="radio"
-                                        name={`context-${model.id}`}
-                                        checked={(activeContextBudgets[model.id] ?? 200_000) === 200_000}
-                                        disabled={settingsScope?.getSnapshot().writable !== true || saving}
-                                        onChange={() => { setContextBudget(model.id, 200_000) }}
-                                      />
-                                      <span>200K</span>
-                                    </label>
-                                  : null}
-                                <label>
-                                  <input
-                                    type="radio"
-                                    name={`context-${model.id}`}
-                                    checked={model.nativeContextWindow <= 200_000 || activeContextBudgets[model.id] === model.nativeContextWindow}
-                                    disabled={model.nativeContextWindow <= 200_000 || settingsScope?.getSnapshot().writable !== true || saving}
-                                    onChange={() => { setContextBudget(model.id, model.nativeContextWindow) }}
-                                  />
-                                  <span>{formatCapacity(model.nativeContextWindow, t('row.modelUnknown'))}</span>
-                                </label>
+                                {getContextBudgetOptions(model.nativeContextWindow).map(budget => (
+                                  <label key={budget}>
+                                    <input
+                                      type="radio"
+                                      name={`context-${model.id}`}
+                                      checked={(activeContextBudgets[model.id] ?? model.nativeContextWindow) === budget}
+                                      disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                      onChange={() => { setContextBudget(model.id, budget) }}
+                                    />
+                                    <span>{formatCapacity(budget, t('row.modelUnknown'))}</span>
+                                  </label>
+                                ))}
                               </fieldset>
                             </div>
                             <div className="dsm-workbuddy-model-details">

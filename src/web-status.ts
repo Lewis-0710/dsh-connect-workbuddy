@@ -110,11 +110,14 @@ function toWebModel(
   return {
     id: model.id,
     name: model.name,
-    contextWindow: model.contextWindow > 200_000 ? Math.min(model.contextWindow, budgets[model.id] ?? 200_000) : model.contextWindow,
+    contextWindow: typeof budgets[model.id] === 'number' && (budgets[model.id] as number) > 0
+      ? (budgets[model.id] as number)
+      : model.contextWindow,
     nativeContextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
     ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
+    ...model.supportsImages === undefined ? {} : { supportsImages: model.supportsImages },
     ...model.reasoning === undefined ? {} : {
       reasoning: {
         ...model.reasoning.supportedEfforts === undefined ? {} : { supportedEfforts: [...model.reasoning.supportedEfforts] },

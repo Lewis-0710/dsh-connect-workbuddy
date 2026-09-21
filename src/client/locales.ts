@@ -11,8 +11,8 @@
  */
 
 export const en = {
-  'row.title': 'WorkBuddy credits & models (dsh-connect-workbuddy)',
-  'row.desc': 'Use WorkBuddy models in DSH and see your remaining credits; the domestic and international sides are two independent providers, each with its own account — use both at the same time.',
+  'row.title': 'WorkBuddy',
+  'row.desc': 'Use the models in the WorkBuddy desktop app directly in DSH, and see your remaining credits at a glance.',
   'row.expand': 'Expand',
   'row.collapse': 'Collapse',
   'row.tabCn': 'Domestic',
@@ -43,6 +43,7 @@ export const en = {
   'row.modelsSummary': '{count} enabled',
   'row.modelsRefresh': 'Refresh from WorkBuddy',
   'row.modelsRefreshing': 'Refreshing models…',
+  'row.modelsResetDefaults': 'Reset to defaults',
   'row.discard': 'Discard changes',
   'row.save': 'Save',
   'row.saving': 'Saving…',
@@ -55,15 +56,15 @@ export const en = {
   'row.modelImage': 'Image',
   'row.modelReasoning': 'Reasoning: {efforts}',
   'row.modelUnknown': 'Unknown',
-  'row.modelCapabilityPending': 'Only capabilities advertised by WorkBuddy are shown.',
+  'row.modelCapabilityPending': 'Image input is only enabled for models you manually check.',
   'row.cheer': 'Star on GitHub',
 } as const
 
 export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
-  'row.title': '接入使用 WorkBuddy 积分与模型（dsh-connect-workbuddy）',
-  'row.desc': '在 DSH 中使用 WorkBuddy 模型并随时查看剩余积分；国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。',
+  'row.title': 'WorkBuddy',
+  'row.desc': '在 DSH 中直接使用 WorkBuddy 桌面 App 包含的模型，并随时查看剩余积分。',
   'row.expand': '展开',
   'row.collapse': '收起',
   'row.tabCn': '国内版',
@@ -94,6 +95,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.modelsSummary': '已启用 {count} 个',
   'row.modelsRefresh': '从 WorkBuddy 刷新',
   'row.modelsRefreshing': '正在刷新模型…',
+  'row.modelsResetDefaults': '恢复默认',
   'row.discard': '放弃修改',
   'row.save': '保存',
   'row.saving': '保存中…',
@@ -106,6 +108,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   'row.modelImage': '图片',
   'row.modelReasoning': '推理强度：{efforts}',
   'row.modelUnknown': '未知',
-  'row.modelCapabilityPending': '仅展示 WorkBuddy 接口明确公布的模型能力。',
+  'row.modelCapabilityPending': '仅对你手动勾选的模型启用图片输入。',
   'row.cheer': '鼓励一下',
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { workBuddyDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
+import { workBuddyModelDisplayName, workBuddyModelInput, workBuddyThinkingLevelMap } from '../src/adapter.ts'
 import type { WorkBuddyModelInfo } from '../src/catalog.ts'
 
 function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean): WorkBuddyModelInfo {
@@ -13,23 +13,27 @@ function model(reasoning?: WorkBuddyModelInfo['reasoning'], multimodal?: boolean
   }
 }
 
+describe('workBuddyModelDisplayName', () => {
+  it('appends formatted credit multiplier suffix when present', () => {
+    expect(workBuddyModelDisplayName({ id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000, creditMultiplier: 0.79 })).toBe('GLM-5.3 (0.79x)')
+    expect(workBuddyModelDisplayName({ id: 'hy3', name: 'Hy3', contextWindow: 192_000, maxTokens: 64_000, creditMultiplier: 0 })).toBe('Hy3 (0.00x)')
+    expect(workBuddyModelDisplayName({ id: 'hy4-preview-x', name: 'Hy4 preview', contextWindow: 1_000_000, maxTokens: 64_000, creditMultiplier: 0.29 })).toBe('Hy4 preview (0.29x)')
+  })
+
+  it('keeps original name when creditMultiplier is undefined', () => {
+    expect(workBuddyModelDisplayName({ id: 'auto', name: 'Auto', contextWindow: 168_000, maxTokens: 32_000 })).toBe('Auto')
+  })
+
+  it('does not duplicate suffix if already present', () => {
+    expect(workBuddyModelDisplayName({ id: 'test', name: 'Test (0.50x)', contextWindow: 200_000, maxTokens: 32_000, creditMultiplier: 0.5 })).toBe('Test (0.50x)')
+  })
+})
+
 describe('workBuddyModelInput', () => {
   it('offers images only for models the user opted into image input', () => {
     expect(workBuddyModelInput(model(undefined, true))).toEqual(['text', 'image'])
     expect(workBuddyModelInput(model(undefined, false))).toEqual(['text'])
     expect(workBuddyModelInput(model())).toEqual(['text'])
-  })
-})
-
-describe('workBuddyDisplayName', () => {
-  it('spells the credit multiplier the way WorkBuddy own selector does', () => {
-    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0.79 })).toBe('Test · x0.79')
-    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0.05 })).toBe('Test · x0.05')
-    expect(workBuddyDisplayName({ ...model(), creditMultiplier: 0 })).toBe('Test · x0.00')
-  })
-
-  it('keeps the bare name when no multiplier was parsed', () => {
-    expect(workBuddyDisplayName(model())).toBe('Test')
   })
 })
 
