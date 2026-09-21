@@ -46,11 +46,13 @@ function baseStore(): {
   accounts: () => Promise<typeof ACCOUNTS>
   status: () => Promise<{ state: 'signed-in'; expiresAtMs: number }>
   resolve: () => Promise<WorkBuddyCredential>
+  selectionLost: () => Promise<boolean>
 } {
   return {
     accounts: async () => ACCOUNTS,
     status: async () => ({ state: 'signed-in', expiresAtMs: CREDENTIAL.expiresAtMs }),
     resolve: async () => CREDENTIAL,
+    selectionLost: async () => false,
   }
 }
 
@@ -95,6 +97,7 @@ describe('workBuddyWebStatus', () => {
         accounts: async () => ACCOUNTS,
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('workbuddy: no signed-in account') },
+        selectionLost: async () => false,
       }) as never,
     }), 'cn')
     expect(status.status).toBe('signed-out')
@@ -108,11 +111,54 @@ describe('workBuddyWebStatus', () => {
         accounts: async () => [],
         status: async () => ({ state: 'signed-out' }),
         resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => false,
       }) as never,
     }), 'cn')
     expect(status.status).toBe('signed-out')
     if (status.status !== 'signed-out') return
     expect(status.accounts).toEqual([])
+  })
+
+  it('flags an orphaned saved selection so the card can stop saying "sign in again"', async () => {
+    // The saved id matches no local account while other sign-ins exist: the
+    // tokens are fine, so the generic signed-out hint would misdirect the user
+    // into re-signing in — the one action that cannot repair an orphaned id.
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => {
+          throw new Error('workbuddy: no signed-in WorkBuddy account found; sign in once in the WorkBuddy desktop app')
+        },
+        selectionLost: async () => true,
+      }) as never,
+    }), 'cn')
+    expect(status.status).toBe('signed-out')
+    if (status.status !== 'signed-out') return
+    expect(status.selectionLost).toBe(true)
+    // The account list must still be offered: it is the way out of the state.
+    expect(status.accounts).toHaveLength(2)
+  })
+
+  it('does not flag selectionLost for a genuinely signed-out machine', async () => {
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({
+        accounts: async () => ACCOUNTS,
+        status: async () => ({ state: 'signed-out' }),
+        resolve: async () => { throw new Error('no account') },
+        selectionLost: async () => false,
+      }) as never,
+    }), 'cn')
+    if (status.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(status.selectionLost).toBeUndefined()
+  })
+
+  it('keeps the signed-in document free of selectionLost', async () => {
+    const status = await workBuddyWebStatus(deps({
+      store: () => ({ ...baseStore(), selectionLost: async () => true }) as never,
+    }), 'cn')
+    expect(status.status).toBe('signed-in')
+    expect('selectionLost' in status).toBe(false)
   })
 
   it('never puts token material in the signed-in document', async () => {

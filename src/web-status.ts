@@ -171,7 +171,16 @@ export async function workBuddyWebStatus(
     // Account selection must remain available even when the selected token is
     // expired or its refresh request fails. Report that as account-level
     // status instead of converting the entire route into HTTP 500.
-    return { status: 'signed-out', accounts: accounts.map(toWebAccount), message: safeMessage(error) }
+    //
+    // `selectionLost` lets the card tell the two causes apart: an orphaned
+    // saved id (the tokens here are fine — re-pick or clear) versus a genuinely
+    // signed-out machine (the "sign in again" hint is then accurate).
+    return {
+      status: 'signed-out',
+      accounts: accounts.map(toWebAccount),
+      message: safeMessage(error),
+      ...await store.selectionLost() ? { selectionLost: true } : {},
+    }
   }
   // Only user-facing identity and expiry cross to the browser. Token material
   // and stable user IDs stay on the Host.

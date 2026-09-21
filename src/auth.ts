@@ -449,9 +449,17 @@ export class WorkBuddyCredentialStore {
     this.inflight = undefined
   }
 
-  /** Select an account by id; tokens stay outside settings. */
+  /**
+   * Select an account by id; tokens stay outside settings.
+   *
+   * The empty string is the settings-level sentinel for "no explicit
+   * selection" (the card's Clear action writes it), so it is normalized here
+   * rather than being kept as an id that can never match an account. Every
+   * caller therefore gets the documented default — follow the app's current
+   * sign-in — instead of a dead selection.
+   */
   selectAccount(accountId: string | undefined): void {
-    this.accountId = accountId
+    this.accountId = accountId === '' ? undefined : accountId
     this.inflight = undefined
   }
 
@@ -578,11 +586,25 @@ export class WorkBuddyCredentialStore {
     return credentials.reduce((best, credential) => isFresher(credential, best) ? credential : best)
   }
 
-  /** Token-free account list for the plugin card. */
+  /**
+   * Token-free account list for the plugin card.
+   *
+   * `selected` answers one question only: which row is the account the plugin
+   * is actually going to use? That is exactly what {@link current} decides, so
+   * the two must never disagree — the card renders this list while the shim
+   * bills through `current()`, and a row marked "selected" that `current()`
+   * refuses to use is what made the dropdown look healthy while every request
+   * failed with 401.
+   *
+   * So an explicit selection that matches NO local account marks nothing as
+   * selected (no silent fallback to a different account — see {@link current}).
+   * The implicit default is marked only when nothing was explicitly chosen.
+   */
   async accounts(): Promise<WorkBuddyAccountChoice[]> {
     const credentials = await this.readAll()
     if (credentials.length === 0) return []
-    const selectedExists = this.accountId !== undefined
+    const hasExplicitSelection = this.accountId !== undefined
+    const selectedExists = hasExplicitSelection
       && credentials.some(credential => workbuddyAccountId(credential) === this.accountId)
     const defaultSelected = this.preferred(credentials)
     return credentials.map(credential => {
@@ -595,9 +617,30 @@ export class WorkBuddyCredentialStore {
         source: credential.source,
         tokenExpiresAtMs: credential.expiresAtMs,
         filePath: credential.filePath,
-        selected: selectedExists ? id === this.accountId : credential === defaultSelected,
+        selected: selectedExists
+          ? id === this.accountId
+          // The default is the account in effect only while the user has not
+          // chosen one; a vanished explicit choice leaves nobody in effect.
+          : !hasExplicitSelection && credential === defaultSelected,
       }
     })
+  }
+
+  /**
+   * Whether a persisted selection exists that matches no local account, while
+   * other local sign-ins ARE available to choose from.
+   *
+   * The card uses this to explain the state honestly (the account is signed in,
+   * but the SAVED choice is gone) instead of showing the generic "sign in
+   * again" hint, which misdirects: the token is usually perfectly healthy and
+   * signing in again does not repair an orphaned id. When no local sign-in is
+   * available at all, that hint IS accurate and this returns false.
+   */
+  async selectionLost(): Promise<boolean> {
+    if (this.accountId === undefined) return false
+    const credentials = await this.readAll()
+    if (credentials.length === 0) return false
+    return !credentials.some(credential => workbuddyAccountId(credential) === this.accountId)
   }
 
   /** The freshest stored credential for the current selection, no refresh. */
