@@ -2,11 +2,18 @@
 > **Fork 维护版本** | 本仓库是 [dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy) 的维护分支。
 > 
 > **与上游差异**：
-> 1. 扩展模型目录（catalog）支持 327+ 模型定义与自定义模型配置
-2. 重写 WorkBuddyCard 组件，优化用量展示与状态提示
-3. 新增 web-status 模块支持 WorkBuddy 网页端用量监控
-4. 适配 Cordis 4.0.2 与 DSH 客户端包拓扑变更
-5. 扩展测试套件覆盖 catalog、adapter、upstream 模块
+> 1. **插件入口命名与界面纯净化**：插件显示名称统一为 `WorkBuddy`（中英文语言包与 `package.json` 同步）；移除设置卡片头部小图标，保持界面简洁纯净。
+> 2. **模型倍率格式对齐**：注入 DSH 的模型显示名及配置列表中，积分倍率格式统一为 `(0.77x)`（即 `(${creditMultiplier.toFixed(2)}x)`），保持底层模型 ID 纯净。
+> 3. **模型列表「恢复默认」与智能重置规则**：在「从 WorkBuddy 刷新」右侧新增「恢复默认」按钮，支持一键重置当前区域的模型勾选、图片选择与上下文预算：
+>    - **启用项**：原生上下文 $\ge 1\text{M}$（`nativeContextWindow >= 1_000_000`）的主力模型默认勾选；
+>    - **图片支持**：严格遵循上游返回的真实多模态能力声明（`supportsImages === true || multimodal === true`）初始勾选；
+>    - **上下文预算**：默认匹配上游返回的原生最大上下文大小，取消强制截断为 200K 的限制。
+> 4. **全模型 1M 上下文自由可选与真实生效**：
+>    - 解决上游接口对部分实际支持 1M 的模型（如 `GLM-5.1`、`GLM-5.0`、`MiniMax-M2.5` 等）返回 200K/512K/128K 导致界面缺失 1M 选项的问题；
+>    - 列表配置中**无论模型原生容量多大，均必定提供 1M 选项**，且解除 `<= 200K` 时的单选禁用限制，支持自由切换；
+>    - 后端放开 `Math.min` 与 `> 200K` 上限截断限制，用户选择 1M 后，运行时目录与注入 DSH 的上下文窗口真实生效为 1,000,000。
+> 5. **多模态明确提示与能力透传**：多模态说明文案定制为「仅对你手动勾选的模型启用图片输入。」，清晰传达手动管控策略；完整透传 `supportsImages` 能力。
+> 6. **Patch-First 自动化同步维护体系**：内置标准化 `sync.sh` 同步脚本，采用 **Patch-First, Smart-Merge** 策略，支持 `--force-with-lease` 保持分支纯净线性历史；重新生成排除了自引用的干净 [sync.patch](./sync.patch)，无缝适配全局 `sync-all.sh` 批量同步。
 > 
 > 详见 [sync.patch](./sync.patch)。
 
