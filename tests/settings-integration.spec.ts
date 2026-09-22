@@ -132,6 +132,55 @@ describe('WorkBuddy provider registration', () => {
   })
 })
 
+describe('account selection through the settings seam', () => {
+  const AUTH_DIR = 'auth'
+  const LIVE = 'workbuddy-desktop.info'
+
+  async function writeLiveAuth(root: string): Promise<void> {
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    await mkdir(join(root, AUTH_DIR), { recursive: true })
+    await writeFile(join(root, AUTH_DIR, LIVE), JSON.stringify({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha', enterpriseId: '' },
+      auth: {
+        accessToken: 'token-alpha',
+        refreshToken: 'refresh-alpha',
+        tokenType: 'Bearer',
+        domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() + 86_400_000,
+        refreshExpiresAt: Date.now() + 7 * 86_400_000,
+      },
+    }), 'utf8')
+  }
+
+  it('the empty-string sentinel clears the region back to the documented default', async () => {
+    // The card's Clear action writes `accounts.<region> = ''`. That must mean
+    // "no explicit selection" (follow the app's current sign-in) — NOT a dead
+    // id that can never match, which is what an empty string used to be.
+    const { mkdtemp } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'wb-clear-'))
+    await writeLiveAuth(root)
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await ctx.plugin(WorkBuddy, { authFile: join(root, AUTH_DIR, LIVE) })
+    await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+
+    // A stale selection would otherwise be indistinguishable from a real one.
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: 'orphaned-id' } })
+    await ctx.settings.update(WorkBuddy.WORKBUDDY_SETTINGS_NS, { accounts: { cn: '' } })
+
+    const doc = await ctx.settings.get(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+    expect((doc as { accounts?: Record<string, string> }).accounts?.cn).toBe('')
+    // The plugin keeps serving both regions (no crash, no dead provider).
+    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+  })
+})
+
 describe('regionStateOf', () => {
   const model = { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, maxTokens: 48_000 }
 

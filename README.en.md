@@ -115,6 +115,7 @@ Marketplace screenshots and GitHub README badges are two separate mechanisms:
 
 - The plugin depends on WorkBuddy client endpoints (not an official public API), so a WorkBuddy update may require adjustments.
 - **Account switching** relies on the historical auth files the WorkBuddy desktop app leaves behind (the app's own backups), not an official multi-account API. Following the app's current sign-in remains the default; switching is an explicit opt-in, and historical credentials can be invalidated by the app's cleanup or sign-out.
+  - If an explicitly selected account disappears locally (the app replaced its login or cleaned up its backups), the plugin does **not** silently switch to another account — that would bill a different account. The card says the saved account no longer exists; pick an account again, or use "Follow the app's sign-in" to clear the saved choice. **Signing in again in the desktop app will not fix this**: the credentials are fine, it is the saved account id that no longer matches.
 - Windows and Linux credential paths are derived from platform conventions and are not verified on real hardware; set `WORKBUDDY_AUTH_FILE` if yours lives elsewhere.
 
 ## Disclaimer

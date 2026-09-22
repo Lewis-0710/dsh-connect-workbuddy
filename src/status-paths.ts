@@ -143,7 +143,22 @@ export type WorkBuddyWebRegion = 'cn' | 'global'
 
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebUsage =
-  | { status: 'signed-out'; accounts: readonly WorkBuddyWebAccount[]; message?: string }
+  /**
+   * Not usable right now. `accounts` is still populated so the picker can
+   * offer a way out, and `selectionLost` separates the two very different
+   * reasons this happens: local sign-ins exist but the SAVED choice no longer
+   * matches any of them (re-select it, or clear it to follow the app's current
+   * sign-in again), versus nothing usable was found at all (sign in in the
+   * desktop app). Only the latter makes the "sign in again" hint truthful —
+   * re-signing in does not repair an orphaned id.
+   */
+  | {
+    status: 'signed-out'
+    accounts: readonly WorkBuddyWebAccount[]
+    message?: string
+    /** The persisted account id matches no local account. */
+    selectionLost?: boolean
+  }
   | {
     status: 'signed-in'
     accountId: string

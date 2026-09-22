@@ -214,20 +214,27 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     }
   }, [open, activeRegion, refreshUsage, status.status])
 
+  /**
+   * Re-detect the local sign-ins and refresh the panel.
+   *
+   * This deliberately writes NO account selection. It used to persist whatever
+   * row the store reported as "selected" whenever that differed from the saved
+   * value, which had two harmful effects: with no explicit choice it turned the
+   * documented default (follow the app's current sign-in) into a permanent
+   * explicit binding — so a later sign-in in the app was no longer followed —
+   * and with an orphaned saved id it silently re-bound the region to a
+   * different account, which is the silent switch that the strict
+   * no-fallback rule exists to prevent. Re-detecting and re-picking are
+   * separate actions now; the picker and Clear button own the selection.
+   */
   const rescanAccounts = async (): Promise<void> => {
     setBusy(true)
     try {
       const response = await fetch(withWorkBuddyRegion(WORKBUDDY_ACCOUNTS_REFRESH_PATH, activeRegion), {
         method: 'POST', headers: { accept: 'application/json' }, credentials: 'same-origin',
       })
-      const body = await response.json() as { accounts?: { id: string; selected: boolean }[] }
+      const body = await response.json() as { accounts?: { id: string }[] }
       if (!response.ok || !Array.isArray(body.accounts)) throw new Error(`HTTP ${response.status}`)
-      const selected = body.accounts.find(account => account.selected)?.id
-      const configuredAccounts = configuredAccountsOf(settingsScope?.getSnapshot().value)
-      const configuredId = configuredAccounts[activeRegion]
-      if (selected !== undefined && selected !== configuredId && settingsScope?.getSnapshot().writable === true) {
-        await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: selected })
-      }
       await refreshUsage(activeRegion)
     } finally {
       if (mounted.current) setBusy(false)
@@ -240,6 +247,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     try {
       const configuredAccounts = configuredAccountsOf(settingsScope.getSnapshot().value)
       await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: accountId })
+      await refreshUsage(activeRegion)
+    } finally {
+      if (mounted.current) setSwitchingAccount(false)
+    }
+  }
+
+  /**
+   * Drop the explicit choice so the region returns to its documented default:
+   * follow whatever the WorkBuddy app is currently signed in as. The empty
+   * string is the settings-level sentinel for "no explicit selection" (the
+   * store normalizes it away); the account id itself is never written here.
+   */
+  const clearAccount = async (): Promise<void> => {
+    if (settingsScope === undefined) return
+    setSwitchingAccount(true)
+    try {
+      const configuredAccounts = configuredAccountsOf(settingsScope.getSnapshot().value)
+      await settingsScope.set('accounts', { ...configuredAccounts, [activeRegion]: '' })
       await refreshUsage(activeRegion)
     } finally {
       if (mounted.current) setSwitchingAccount(false)
@@ -453,6 +478,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
     : status.status === 'error'
       ? t('row.requestFailed')
       : t('row.signedOut')
+  /** The saved choice no longer matches a local sign-in (tokens are fine). */
+  const selectionLost = status.status === 'signed-out' && status.selectionLost === true
 
   return (
     <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
@@ -513,6 +540,9 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                     || (status.status === 'signed-in' && status.creditsError !== undefined)
                     ? <span className="dsm-workbuddy-usage-hint">{t('row.reloginHint')}</span>
                     : null}
+                  {selectionLost
+                    ? <span className="dsm-workbuddy-usage-hint">{t('row.selectionLostHint')}</span>
+                    : null}
                 </div>
                 <button
                   type="button"
@@ -528,10 +558,29 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                     <div className="dsm-workbuddy-usage-select-wrap">
                       <select
                         className="dsm-workbuddy-usage-select"
-                        value={status.status === 'signed-in' ? status.accountId : ''}
+                        /* Read the selection from the account list rather than
+                           from the status branch. `accountId` only exists on
+                           the signed-in document, so deriving the value from
+                           it blanked the control both when the saved id was
+                           orphaned AND when a perfectly intact choice merely
+                           failed to resolve (expired token, refresh error) —
+                           the user's own choice looked like it had vanished.
+                           The list is the one source that distinguishes "no
+                           account in effect" from "signed in". */
+                        value={status.accounts.find(account => account.selected)?.id ?? ''}
                         disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
                         onChange={event => { void switchAccount(event.currentTarget.value) }}
                       >
+                        {/* Shown while no row is in effect — an orphaned saved
+                            id, a failed refresh, or no explicit choice yet.
+                            Without it the control would have no matching
+                            option and silently display the first account,
+                            which is exactly the "looks fine, but is not what
+                            runs" confusion this fixes. Disabled so it can
+                            never be picked as a value. */}
+                        {status.accounts.some(account => account.selected)
+                          ? null
+                          : <option value="" disabled>{t('row.accountNoneInEffect')}</option>}
                         {status.accounts.map(account => (
                           <option key={account.id} value={account.id}>
                             {account.accountName}{account.domain === '' ? '' : ` · ${account.domain}`}
@@ -539,6 +588,21 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                         ))}
                       </select>
                     </div>
+                    {/* The way out of an explicit choice — including an
+                        orphaned one, which is how this state becomes
+                        recoverable at all. Enabled whenever there is a choice
+                        that CAN be cleared: with no explicit selection the
+                        write is a harmless no-op (the sentinel normalizes to
+                        "no selection"), and with a valid one it is exactly the
+                        documented "follow the app's current sign-in". */}
+                    <button
+                      type="button"
+                      className="dsm-btn dsm-btn-outline"
+                      disabled={switchingAccount || settingsScope?.getSnapshot().writable !== true}
+                      onClick={() => { void clearAccount() }}
+                    >
+                      {t('row.accountsFollowApp')}
+                    </button>
                   </section>
                 : null}
               {status.status === 'signed-in'
@@ -731,7 +795,17 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                     </section>
                   </>
                 : null}
-              {status.status === 'signed-out' ? <p className="dsm-workbuddy-usage-text">{status.message ?? t('row.signedOutHint')}</p> : null}
+              {status.status === 'signed-out'
+                ? <p className="dsm-workbuddy-usage-text">
+                    {/* An orphaned saved id is NOT a signed-out machine: the
+                        tokens are fine and re-signing in would not repair the
+                        id. Say what actually helps (re-pick, or follow the app
+                        again) instead of echoing the resolve() error, which
+                        tells the user to sign in — the one action that cannot
+                        fix this. */}
+                    {selectionLost ? t('row.selectionLostMessage') : status.message ?? t('row.signedOutHint')}
+                  </p>
+                : null}
               {status.status === 'error' ? <p className="dsm-workbuddy-usage-error">{status.message}</p> : null}
             </div>
           : null}

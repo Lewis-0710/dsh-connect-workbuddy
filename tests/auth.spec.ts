@@ -370,6 +370,166 @@ describe('WorkBuddyCredentialStore multi-account discovery', () => {
     expect(credential).toBeUndefined()
   })
 
+  it('marks NO account selected when the explicit selection is gone', async () => {
+    // Regression for the "healthy account, blank dropdown" report: accounts()
+    // used to fall back to an object-identity comparison, so it kept reporting
+    // a row as selected while current() refused to use any account. The card
+    // renders this list next to a status line driven by current(), so the two
+    // disagreeing is what produced a self-contradictory panel: a row that
+    // looked chosen, with every request failing.
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    store.selectAccount('a-saved-id-that-no-longer-exists')
+    const accounts = await store.accounts()
+    // Nothing is in effect — do not claim otherwise.
+    expect(accounts.filter(account => account.selected)).toHaveLength(0)
+    expect(await store.current()).toBeUndefined()
+    // The account is still offered: it is the way out of the state.
+    expect(accounts.map(account => account.accountName)).toEqual(['Alpha'])
+  })
+
+  it('still marks the implicit default when nothing was ever chosen', async () => {
+    // The other half of the contract: with no explicit selection the card must
+    // show which account the plugin actually follows (the live sign-in).
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    await writeAuth('workbuddy-desktop.2026-07-01T00-00-00-000Z.info', accountDoc({
+      account: { uid: 'uid-2', uin: '100000000002', nickname: 'Beta' },
+      auth: { accessToken: 'token-beta', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const accounts = await store.accounts()
+    const selected = accounts.filter(account => account.selected)
+    expect(selected).toHaveLength(1)
+    expect(selected[0]?.accountName).toBe('Alpha')
+    // And accounts() agrees with what actually resolves.
+    expect((await store.current())?.nickname).toBe('Alpha')
+  })
+
+  it('keeps the selection visible when a valid choice merely fails to resolve', async () => {
+    // Distinct from the orphaned case: the saved id IS a local account, but its
+    // token is expired and cannot refresh, so resolve() throws. The card
+    // derives the dropdown value from this list, and the user's own choice must
+    // still be named — deriving it from the signed-in document instead blanked
+    // the control here too, making an intact selection look like it vanished.
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: {
+        accessToken: 'token-alpha',
+        refreshToken: '',
+        domain: 'www.codebuddy.cn',
+        expiresAt: Date.now() - 60_000,
+        refreshExpiresAt: Date.now() - 60_000,
+      },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const alphaId = (await store.accounts())[0]?.id
+    store.selectAccount(alphaId)
+    const accounts = await store.accounts()
+    // The choice is intact and reported as selected, so the card can name it...
+    expect(accounts.filter(account => account.selected)).toHaveLength(1)
+    expect(accounts.find(account => account.selected)?.id).toBe(alphaId)
+    // ...and it is NOT the "selection lost" state — the id still matches.
+    expect(await store.selectionLost()).toBe(false)
+  })
+
+  it('reports selectionLost only when the saved id is orphaned and others exist', async () => {
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    // No explicit selection: nothing is "lost", the default is in effect.
+    expect(await store.selectionLost()).toBe(false)
+    // A valid selection is not lost either.
+    const alpha = (await store.accounts())[0]?.id
+    store.selectAccount(alpha)
+    expect(await store.selectionLost()).toBe(false)
+    // An orphaned id with a usable sign-in available IS the lost case.
+    store.selectAccount('orphaned-id')
+    expect(await store.selectionLost()).toBe(true)
+  })
+
+  it('does not claim selectionLost when there is no local sign-in at all', async () => {
+    // With nothing to choose from, the "sign in again" hint is accurate, so the
+    // orphaned-selection message must not preempt it.
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, 'missing')],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    store.selectAccount('orphaned-id')
+    expect(await store.selectionLost()).toBe(false)
+  })
+
+  it('treats the empty-string sentinel as "no explicit selection"', async () => {
+    // The card's Clear action writes '' (the settings-level sentinel for
+    // "follow the app"), which must restore the documented default rather than
+    // remaining a permanently dead id like any other non-matching string.
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const store = new WorkBuddyCredentialStore({
+      authDirs: [join(root, AUTH_DIR)],
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    store.selectAccount('orphaned-id')
+    expect(await store.current()).toBeUndefined()
+
+    // Clearing restores the default: follow the app's current sign-in.
+    store.selectAccount('')
+    expect(store.selectedAccountId()).toBeUndefined()
+    expect((await store.current())?.nickname).toBe('Alpha')
+    expect((await store.accounts()).filter(account => account.selected)).toHaveLength(1)
+    expect(await store.selectionLost()).toBe(false)
+  })
+
+  it('a vanished selected account keeps every region honest (no cross-region fallback)', async () => {
+    // The same state must not leak across the region split: each region's
+    // selection is its own, and an orphaned id in one leaves the other alone.
+    await writeAuth(LIVE, accountDoc({
+      account: { uid: 'uid-1', uin: '100000000001', nickname: 'Alpha' },
+      auth: { accessToken: 'token-alpha', refreshToken: 'r', domain: 'www.codebuddy.cn', expiresAt: Date.now() + 86_400_000 },
+    }))
+    await writeAuth('workbuddy-desktop-ai.info', accountDoc({
+      account: { uid: 'uid-2', uin: '100000000002', nickname: 'Gamma' },
+      auth: { accessToken: 'token-gamma', refreshToken: 'r', domain: 'www.workbuddy.ai', expiresAt: Date.now() + 86_400_000 },
+    }))
+    const mk = (region: 'cn' | 'global') => new WorkBuddyCredentialStore({
+      region,
+      authDirs: [join(root, AUTH_DIR)],
+      ownPath: join(root, `own-${region}.json`),
+      legacyOwnPath: join(root, 'legacy.json'),
+      refresh: async () => ({ accessToken: 'never' }),
+    })
+    const cn = mk('cn')
+    const global = mk('global')
+    cn.selectAccount('orphaned-cn-id')
+    expect((await cn.accounts()).filter(account => account.selected)).toHaveLength(0)
+    expect(await cn.selectionLost()).toBe(true)
+    // The other region is untouched: its own sign-in still resolves.
+    expect((await global.accounts()).filter(account => account.selected)).toHaveLength(1)
+    expect((await global.current())?.nickname).toBe('Gamma')
+    expect(await global.selectionLost()).toBe(false)
+  })
+
   it('skips corrupt files instead of hiding the other accounts', async () => {
     await writeAuth('workbuddy-desktop.2026-07-01T00-00-00-000Z.info', accountDoc({
       account: { uid: 'uid-2', uin: '100000000002', nickname: 'Beta' },
