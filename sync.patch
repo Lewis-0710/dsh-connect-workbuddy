@@ -1,17 +1,24 @@
 diff --git a/README.md b/README.md
-index 222d626..df0aaac 100644
+index 1048c1e..b4fa30f 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,3 +1,15 @@
+@@ -1,3 +1,22 @@
 +> [!NOTE]
 +> **Fork 维护版本** | 本仓库是 [dingminhua/dsh-connect-workbuddy](https://github.com/dingminhua/dsh-connect-workbuddy) 的维护分支。
 +> 
 +> **与上游差异**：
-+> 1. 扩展模型目录（catalog）支持 327+ 模型定义与自定义模型配置
-+2. 重写 WorkBuddyCard 组件，优化用量展示与状态提示
-+3. 新增 web-status 模块支持 WorkBuddy 网页端用量监控
-+4. 适配 Cordis 4.0.2 与 DSH 客户端包拓扑变更
-+5. 扩展测试套件覆盖 catalog、adapter、upstream 模块
++> 1. **插件入口命名与界面纯净化**：插件显示名称统一为 `WorkBuddy`（中英文语言包与 `package.json` 同步）；移除设置卡片头部小图标，保持界面简洁纯净。
++> 2. **模型倍率格式对齐**：注入 DSH 的模型显示名及配置列表中，积分倍率格式统一为 `(0.77x)`（即 `(${creditMultiplier.toFixed(2)}x)`），保持底层模型 ID 纯净。
++> 3. **模型列表「恢复默认」与智能重置规则**：在「从 WorkBuddy 刷新」右侧新增「恢复默认」按钮，支持一键重置当前区域的模型勾选、图片选择与上下文预算：
++>    - **启用项**：原生上下文 $\ge 1\text{M}$（`nativeContextWindow >= 1_000_000`）的主力模型默认勾选；
++>    - **图片支持**：严格遵循上游返回的真实多模态能力声明（`supportsImages === true || multimodal === true`）初始勾选；
++>    - **上下文预算**：默认匹配上游返回的原生最大上下文大小，取消强制截断为 200K 的限制。
++> 4. **全模型 1M 上下文自由可选与真实生效**：
++>    - 解决上游接口对部分实际支持 1M 的模型（如 `GLM-5.1`、`GLM-5.0`、`MiniMax-M2.5` 等）返回 200K/512K/128K 导致界面缺失 1M 选项的问题；
++>    - 列表配置中**无论模型原生容量多大，均必定提供 1M 选项**，且解除 `<= 200K` 时的单选禁用限制，支持自由切换；
++>    - 后端放开 `Math.min` 与 `> 200K` 上限截断限制，用户选择 1M 后，运行时目录与注入 DSH 的上下文窗口真实生效为 1,000,000。
++> 5. **多模态明确提示与能力透传**：多模态说明文案定制为「仅对你手动勾选的模型启用图片输入。」，清晰传达手动管控策略；完整透传 `supportsImages` 能力。
++> 6. **Patch-First 自动化同步维护体系**：内置标准化 `sync.sh` 同步脚本，采用 **Patch-First, Smart-Merge** 策略，支持 `--force-with-lease` 保持分支纯净线性历史；重新生成排除了自引用的干净 [sync.patch](./sync.patch)，无缝适配全局 `sync-all.sh` 批量同步。
 +> 
 +> 详见 [sync.patch](./sync.patch)。
 +
@@ -19,7 +26,7 @@ index 222d626..df0aaac 100644
    <img src="docs/assets/dsh-connect-workbuddy-usage-card.png" width="640" alt="dsh-connect-workbuddy settings panel" />
  </p>
 diff --git a/package.json b/package.json
-index 887e26b..71cf243 100644
+index ef07d34..8c5b745 100644
 --- a/package.json
 +++ b/package.json
 @@ -1,6 +1,6 @@
@@ -28,7 +35,7 @@ index 887e26b..71cf243 100644
 -  "displayName": "DSH Connect WorkBuddy",
 +  "displayName": "WorkBuddy",
    "description": "Connect locally signed-in WorkBuddy models to DeepSeek Harness with a read-only credits overview and model management.",
-   "version": "2.0.3",
+   "version": "2.0.4",
    "author": "dingminhua",
 diff --git a/src/adapter.ts b/src/adapter.ts
 index a6e3ad1..6b98c31 100644
@@ -448,7 +455,7 @@ index 8ea9676..44473b8 100644
  }
  
 diff --git a/src/client/WorkBuddyCard.tsx b/src/client/WorkBuddyCard.tsx
-index 06d1d8a..7a9c977 100644
+index 2caa1e8..11a3f01 100644
 --- a/src/client/WorkBuddyCard.tsx
 +++ b/src/client/WorkBuddyCard.tsx
 @@ -36,7 +36,6 @@ import {
@@ -480,7 +487,7 @@ index 06d1d8a..7a9c977 100644
  function dotStyle(status: WorkBuddyWebUsage['status']): Record<string, string> {
    const color = status === 'signed-in'
      ? 'var(--dsw-alias-state-success-primary, #22a06b)'
-@@ -269,6 +282,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -294,6 +307,10 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
        // enabled choices, image opt-ins, or context budgets.
        const stillEnabled = [...activeEnabledIds].filter(id => freshIds.has(id))
        const stillImages = [...activeImageIds].filter(id => freshIds.has(id))
@@ -491,7 +498,7 @@ index 06d1d8a..7a9c977 100644
        const stillBudgets: Record<string, number> = {}
        for (const id of freshIds) {
          const budget = activeContextBudgets[id]
-@@ -278,8 +295,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -303,8 +320,8 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
          ...prev,
          [activeRegion]: {
            models: fresh,
@@ -502,7 +509,7 @@ index 06d1d8a..7a9c977 100644
            contextBudgets: stillBudgets,
          },
        }))
-@@ -299,9 +316,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -324,9 +341,15 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
    // re-mapped onto the current catalog by model id.
    const draft = drafts[activeRegion]
    const visibleModels = draft?.models ?? (status.status === 'signed-in' ? status.models : [])
@@ -520,7 +527,7 @@ index 06d1d8a..7a9c977 100644
    const activeImageIds = draft?.imageIds ?? savedImageIds
    const configured = settingsScope?.getSnapshot().value
    // Context budgets live in the same per-region slot the save writes into, so a
-@@ -356,6 +379,30 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -381,6 +404,30 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
      }))
    }
  
@@ -551,7 +558,7 @@ index 06d1d8a..7a9c977 100644
    const discardModels = (): void => {
      setDrafts(prev => {
        const next = { ...prev }
-@@ -416,7 +463,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -443,7 +490,6 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
          aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${title}`}
          onClick={() => { setOpen(!open) }}
        >
@@ -559,7 +566,7 @@ index 06d1d8a..7a9c977 100644
          <span className="dsm-plugin-card-head">
            <span className="dsm-plugin-card-title">{title}</span>
            <span className="dsm-plugin-card-description">{t('row.desc')}</span>
-@@ -587,14 +633,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -651,14 +697,24 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                            <h3 className="dsm-workbuddy-models-title">{t('row.modelsTitle')}</h3>
                            <p className="dsm-workbuddy-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                          </div>
@@ -592,7 +599,7 @@ index 06d1d8a..7a9c977 100644
                        </div>
                        <div className="dsm-workbuddy-model-list">
                          {visibleModels.map(model => (
-@@ -625,28 +681,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
+@@ -689,28 +745,18 @@ export function WorkBuddyCard({ t, settingsScope }: WorkBuddyCardProps) {
                                  <span>{t('row.modelImage')}</span>
                                </label>
                                <fieldset className="dsm-workbuddy-context-budget" aria-label={t('row.contextBudget')}>
@@ -634,7 +641,7 @@ index 06d1d8a..7a9c977 100644
                              </div>
                              <div className="dsm-workbuddy-model-details">
 diff --git a/src/client/locales.ts b/src/client/locales.ts
-index 504ea2c..374fd74 100644
+index 3de5022..fd198b9 100644
 --- a/src/client/locales.ts
 +++ b/src/client/locales.ts
 @@ -11,8 +11,8 @@
@@ -648,7 +655,7 @@ index 504ea2c..374fd74 100644
    'row.expand': 'Expand',
    'row.collapse': 'Collapse',
    'row.tabCn': 'Domestic',
-@@ -43,6 +43,7 @@ export const en = {
+@@ -47,6 +47,7 @@ export const en = {
    'row.modelsSummary': '{count} enabled',
    'row.modelsRefresh': 'Refresh from WorkBuddy',
    'row.modelsRefreshing': 'Refreshing models…',
@@ -656,7 +663,7 @@ index 504ea2c..374fd74 100644
    'row.discard': 'Discard changes',
    'row.save': 'Save',
    'row.saving': 'Saving…',
-@@ -55,15 +56,15 @@ export const en = {
+@@ -59,15 +60,15 @@ export const en = {
    'row.modelImage': 'Image',
    'row.modelReasoning': 'Reasoning: {efforts}',
    'row.modelUnknown': 'Unknown',
@@ -675,7 +682,7 @@ index 504ea2c..374fd74 100644
    'row.expand': '展开',
    'row.collapse': '收起',
    'row.tabCn': '国内版',
-@@ -94,6 +95,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
+@@ -102,6 +103,7 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
    'row.modelsSummary': '已启用 {count} 个',
    'row.modelsRefresh': '从 WorkBuddy 刷新',
    'row.modelsRefreshing': '正在刷新模型…',
@@ -683,7 +690,7 @@ index 504ea2c..374fd74 100644
    'row.discard': '放弃修改',
    'row.save': '保存',
    'row.saving': '保存中…',
-@@ -106,6 +108,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
+@@ -114,6 +116,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
    'row.modelImage': '图片',
    'row.modelReasoning': '推理强度：{efforts}',
    'row.modelUnknown': '未知',
@@ -732,7 +739,7 @@ index 3b1bf34..93aede7 100644
    // Runtime catalog derives from the last-refreshed directory plus the user's
    // selection; an empty selection serves the whole directory so a never-
 diff --git a/src/status-paths.ts b/src/status-paths.ts
-index e810864..4ee52be 100644
+index d01df76..d4c587f 100644
 --- a/src/status-paths.ts
 +++ b/src/status-paths.ts
 @@ -20,6 +20,8 @@ export const WORKBUDDY_MODELS_REFRESH_PATH = '/plugins/dsh-connect-workbuddy/mod
@@ -818,7 +825,7 @@ index 7adea91..c029675 100644
  
    /** Query today's check-in status without changing account state. */
 diff --git a/src/web-status.ts b/src/web-status.ts
-index 8ea55a1..66fc155 100644
+index fc38ba9..da81e95 100644
 --- a/src/web-status.ts
 +++ b/src/web-status.ts
 @@ -110,11 +110,14 @@ function toWebModel(
@@ -1062,10 +1069,10 @@ index c219d08..8531e79 100644
  
    it('rejects disabled models and models without token limits', () => {
 diff --git a/tests/web-status.spec.ts b/tests/web-status.spec.ts
-index d7300ff..b0abd35 100644
+index 11ea794..1b4776f 100644
 --- a/tests/web-status.spec.ts
 +++ b/tests/web-status.spec.ts
-@@ -132,7 +132,7 @@ describe('workBuddyWebStatus', () => {
+@@ -178,7 +178,7 @@ describe('workBuddyWebStatus', () => {
      expect(status.accounts).toHaveLength(2)
      expect(status.models.length).toBe(FALLBACK_WORKBUDDY_MODELS.length)
      const glm = status.models.find(model => model.id === 'glm-5.3')
